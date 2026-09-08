@@ -104,4 +104,26 @@ and one of them can brick a keyboard.
 
 ## Licence
 
-MIT or Apache-2.0, at your option.
+Licensed under either of
+
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
+- MIT licence ([LICENSE-MIT](LICENSE-MIT))
+
+at your option. This is the Rust ecosystem convention: MIT is short and
+permissive, and Apache-2.0 adds an explicit patent grant that MIT lacks.
+
+### Contribution
+
+Unless you explicitly state otherwise, any contribution intentionally
+submitted for inclusion in the work by you, as defined in the Apache-2.0
+licence, shall be dual licensed as above, without any additional terms or
+conditions.
+
+### A note on OpenRGB
+
+OpenRGB is GPLv2, and permissive licensing here does not get in its way. The
+protocol itself is a set of facts about how the hardware behaves, documented
+in [docs/PROTOCOL.md](docs/PROTOCOL.md) — anyone is free to implement it, and
+an OpenRGB driver would be written in C++ from those notes rather than by
+copying this Rust code. Contributions upstreaming F75 support to OpenRGB are
+very welcome.
