@@ -85,7 +85,7 @@ if (Test-Path $Out) {
     $usbFrames = ($enc | Where-Object { $_ -match "usb" }).Count
     if ($usbFrames -gt 0) {
         Write-Host "Verified: USB traffic present." -ForegroundColor Green
-        Write-Host "Now tell Claude the capture is done." -ForegroundColor Cyan
+        Write-Host "Capture complete. Decode it with: npx tsx src/parse-capture.ts" -ForegroundColor Cyan
     } else {
         Write-Host "WARNING: no USB frames found - this is not a USB capture." -ForegroundColor Red
         Write-Host "First protocols seen: $($enc | Select-Object -First 3)" -ForegroundColor Yellow
