@@ -1,4 +1,4 @@
-//! `aula-rgb` — desktop control for AULA keyboard lighting.
+//! `keylux` — desktop control for AULA keyboard lighting.
 //!
 //! Runs the GUI by default. Any argument drops to the CLI, which is handy for
 //! scripting and for hardware checks without a window.
@@ -37,12 +37,12 @@ fn main() -> anyhow::Result<()> {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_inner_size([880.0, 620.0])
             .with_min_inner_size([640.0, 480.0])
-            .with_title("aula-rgb"),
+            .with_title("keylux"),
         ..Default::default()
     };
 
     eframe::run_native(
-        "aula-rgb",
+        "keylux",
         options,
         Box::new(move |cc| Ok(Box::new(ui::App::new(cc, dir)))),
     )

@@ -9,7 +9,7 @@ repository.workspace = true
 authors.workspace = true
 
 [[bin]]
-name = "aula-rgb"
+name = "keylux"
 path = "src/main.rs"
 
 [dependencies]

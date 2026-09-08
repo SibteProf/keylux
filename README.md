@@ -1,6 +1,7 @@
-# aula-rgb
+# keylux
 
-Open-source RGB control for the **AULA F75** mechanical keyboard, in Rust.
+Open-source per-key RGB control for the **AULA F75** mechanical keyboard,
+written in Rust.
 
 Per-key colour and smooth animation over USB, with no vendor software and no
 firmware modification. Write your own effects as small scripts — no Rust

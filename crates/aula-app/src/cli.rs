@@ -1,4 +1,4 @@
-//! `aula-rgb` — control for AULA keyboard lighting.
+//! `keylux` — control for AULA keyboard lighting.
 //!
 //! Phase 4 turns this into an egui app. For now it is a CLI over the same
 //! effect engine the GUI will use, which keeps the render loop verified on
@@ -59,7 +59,7 @@ pub fn run() -> anyhow::Result<()> {
                 println!("               --{:<10} {:?}", p.id, p.kind);
             }
         }
-        println!("\nRun one:  aula-rgb <id> [seconds] [--param value ...]");
+        println!("\nRun one:  keylux <id> [seconds] [--param value ...]");
         println!("Add your own: drop a .rhai file into {}", dir.display());
         return Ok(());
     }
