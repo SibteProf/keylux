@@ -152,3 +152,12 @@ applies colours, then decode. Two notes that cost hours here:
    stack when it *starts*; a device already running yields almost nothing.
 2. **Capture both a static apply and an animated mode.** They use different
    commands, and you cannot infer one from the other.
+
+## Using this
+
+These are observations about how the hardware behaves, not an implementation.
+Implement them freely in any project under any licence — including
+[OpenRGB](https://gitlab.com/CalcProgrammer1/OpenRGB), which is GPLv2 and for
+which an F75 driver would be a genuinely useful addition. Nothing here needs
+to be copied from this repository's Rust code, so its permissive licence is
+not a constraint.
