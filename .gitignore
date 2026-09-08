@@ -1,0 +1,18 @@
+# Rust
+/target
+**/*.rs.bk
+*.pdb
+
+# USB captures: large and machine-specific. Decoded findings live in
+# docs/PROTOCOL.md instead.
+*.pcapng
+*.pcap
+
+# Device dumps, except the captured config blocks that document the
+# per-key and solid lighting modes.
+*.bin
+!reference/captured-config.bin
+!reference/custom-mode-config.bin
+
+# User content created at runtime
+/animations/*.json

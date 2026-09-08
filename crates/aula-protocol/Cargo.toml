@@ -1,0 +1,20 @@
+[package]
+name = "aula-protocol"
+description = "USB HID protocol for AULA RGB keyboards (Sinowealth 8051)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+hidapi.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+anyhow.workspace = true
+
+[[example]]
+name = "smoke"
+path = "examples/smoke.rs"

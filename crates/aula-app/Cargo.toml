@@ -1,0 +1,21 @@
+[package]
+name = "aula-app"
+description = "Desktop app for controlling AULA keyboard RGB"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "aula-rgb"
+path = "src/main.rs"
+
+[dependencies]
+aula-protocol.workspace = true
+aula-effects.workspace = true
+anyhow.workspace = true
+eframe.workspace = true
+egui.workspace = true
+rfd.workspace = true

@@ -1,0 +1,11 @@
+# Linux: allow non-root access to AULA keyboard HID interfaces.
+#
+# Install:
+#   sudo cp packaging/99-aula.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules && sudo udevadm trigger
+#
+# Without this, opening the vendor HID collection needs root.
+
+# AULA F75 (Sinowealth) — wired USB-C mode
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="258a", ATTRS{idProduct}=="010c", MODE="0660", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="258a", ATTRS{idProduct}=="010c", MODE="0660", TAG+="uaccess"

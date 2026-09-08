@@ -1,0 +1,32 @@
+{
+  "name": "aula-f75-rgb",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Per-key RGB control for the AULA F75 (Sinowealth 258a:010c) over USB HID",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "info": "tsx src/cli.ts info",
+    "red": "tsx src/cli.ts red",
+    "wave": "tsx src/cli.ts wave",
+    "sweep": "tsx src/cli.ts sweep",
+    "dump": "tsx src/cli.ts dump",
+    "layout": "tsx src/cli.ts layout",
+    "restore": "tsx src/restore.ts",
+    "bench": "tsx src/bench.ts",
+    "enum-commands": "tsx src/enum-commands.ts",
+    "parse-capture": "tsx src/parse-capture.ts"
+  },
+  "dependencies": {
+    "node-hid": "^3.1.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  },
+  "allowScripts": {
+    "node-hid@3.4.0": true,
+    "esbuild@0.28.2": true
+  }
+}
