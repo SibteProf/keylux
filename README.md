@@ -32,7 +32,8 @@ genuinely surprising — and turns it into something usable.
 - User effects as `.rhai` scripts, hot-reloaded from `effects/`
 - Keyframe animations: paint them in the timeline editor, or import a GIF,
   image or folder of frames
-- Runs in the system tray, so the lighting keeps going with the window closed
+- Runs in the system tray (Windows), so the lighting keeps going with the
+  window closed
 
 See [`docs/PROTOCOL.md`](docs/PROTOCOL.md) for the complete protocol.
 
@@ -103,10 +104,14 @@ remember the answer. Minimising hides to the tray as well. Both, plus whether
 the lighting keeps rendering while hidden, are under **Window** at the bottom of
 the effects panel.
 
-The tray icon's menu has *Show*, *Pause/Resume lighting* and *Quit*; a
-double-click reopens the window. If the tray icon cannot be created, the app
-never hides the window — closing simply quits, because there would be no way
-back.
+The tray icon's menu has *Show*, *Play / pause lighting* and *Quit*; a
+double-click reopens the window.
+
+**Hiding to the tray is Windows-only for now.** egui does not repaint a hidden
+window, so reopening one has to go through the windowing system directly, and
+only the Windows path is implemented. Elsewhere the app refuses to hide at all
+and closing simply quits — better than a window nothing can bring back. The
+same applies if the tray icon cannot be created.
 
 Preferences live in `%APPDATA%\keylux\settings.json` (or
 `~/.config/keylux/settings.json`), and can be edited or deleted by hand.
@@ -118,7 +123,10 @@ layout, produce a frame. They **declare** their own parameters, and the UI
 builds controls from that declaration — so a new script gets sliders and colour
 pickers for free.
 
-Scripting support lands in a later phase; the Rust trait is in
+Drop a `.rhai` file into `effects/` and it appears in the list within a second,
+sliders and all; edit it while the app runs and the change is picked up without
+a restart. The shipped examples in that folder are the quickest way in, and the
+Rust trait behind it is in
 [`crates/aula-effects/src/lib.rs`](crates/aula-effects/src/lib.rs).
 
 ## Contributing
