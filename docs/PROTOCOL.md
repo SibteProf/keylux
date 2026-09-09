@@ -116,6 +116,21 @@ Writing faster starves the 8051's key-scanning loop: the keyboard stops
 responding to keypresses until it is replugged. **60 FPS is not achievable.**
 ~21 FPS is the hardware's comfortable rate.
 
+Starvation is not all-or-nothing, and the partial case is easy to misread. At
+25 FPS the board lights perfectly and looks entirely healthy — but it starts
+dropping the occasional keypress and reporting others twice. It reads as a
+failing switch or a debounce problem, not as a lighting bug, so **treat any new
+typing weirdness as a pacing regression first**. Keep at or below the vendor
+driver's own floor of 44.7 ms; there is no visible benefit above it.
+
+Two cheap ways to give the scan loop more room, both worth having:
+
+- **Do not resend an unchanged frame.** A still image or a paused effect then
+  costs nothing at all. Resend every couple of seconds anyway, so the board
+  recovers by itself if the firmware ever repaints behind you.
+- **Pausing should stop writing**, not stream black. Blanking the board and
+  then holding it there is the full cost for none of the benefit.
+
 ## Things that are true but look wrong
 
 Recorded so nobody re-derives them the hard way:
