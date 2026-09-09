@@ -35,6 +35,9 @@ pub struct Settings {
     /// back to whatever the firmware was last told, which is what most people
     /// expect from "close".
     pub run_in_background: bool,
+    /// Write rate cap. The device clamps this to its own ceiling, so a value
+    /// from an older or hand-edited file can only ever make things gentler.
+    pub max_fps: u32,
 }
 
 impl Default for Settings {
@@ -43,6 +46,7 @@ impl Default for Settings {
             close_action: CloseAction::Ask,
             minimize_to_tray: true,
             run_in_background: true,
+            max_fps: aula_protocol::f75::protocol::MAX_FPS,
         }
     }
 }
@@ -94,12 +98,14 @@ mod tests {
             close_action: CloseAction::Tray,
             minimize_to_tray: false,
             run_in_background: false,
+            max_fps: 12,
         };
         let json = serde_json::to_string(&s).unwrap();
         let back: Settings = serde_json::from_str(&json).unwrap();
         assert_eq!(back.close_action, CloseAction::Tray);
         assert!(!back.minimize_to_tray);
         assert!(!back.run_in_background);
+        assert_eq!(back.max_fps, 12);
     }
 
     /// A settings file written by an older build must not wipe the user's

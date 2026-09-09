@@ -80,8 +80,45 @@ pub const STREAM_SLOTS: usize = STREAM_LEN / 3; // 126
 /// writes and never dips below 44.7 ms. Pushing harder starves the 8051's
 /// key-scanning loop: the keyboard stops responding to keypresses until it is
 /// replugged. 60 FPS is not achievable on this hardware.
-pub const MAX_FPS: u32 = 21;
-pub const MIN_FRAME_GAP_MS: u64 = 40;
+///
+/// The gap is the source of truth and the frame rate is derived from it. They
+/// were once independent constants and drifted apart: the gap said 40 ms, which
+/// is 25 FPS — faster than the vendor driver ever writes. The board still lit
+/// correctly, but the scan loop was starved just enough to drop the occasional
+/// keypress and to report others twice.
+pub const MIN_FRAME_GAP_MS: u64 = 46;
+pub const MAX_FPS: u32 = (1000 / MIN_FRAME_GAP_MS) as u32;
+
+/// Resend an unchanged frame at least this often.
+///
+/// Identical frames are otherwise skipped, which costs nothing visually and
+/// takes a still image — or a paused effect — down to no bus traffic at all.
+/// The periodic resend is insurance: if the firmware ever repaints itself, the
+/// board recovers on its own instead of staying wrong until something moves.
+pub const KEEPALIVE_MS: u64 = 2_000;
+
+// Compile-time, not tests: getting these wrong does not produce a rendering
+// artefact, it produces a keyboard that drops and repeats keypresses. That
+// should never reach a build at all.
+const _: () = {
+    assert!(
+        MAX_FPS as u64 * MIN_FRAME_GAP_MS <= 1000,
+        "the advertised frame rate needs a tighter gap than the driver enforces"
+    );
+    // The vendor driver never writes closer together than 44.7 ms, measured
+    // across three captures. Below that is uncharted, and the LEDs cannot show
+    // the difference anyway.
+    assert!(
+        MIN_FRAME_GAP_MS >= 45,
+        "writing faster than the vendor driver starves the key-scan loop"
+    );
+    // Skipping unchanged frames is only safe if something eventually resends,
+    // and the resend has to be rare enough to cost nothing.
+    assert!(
+        KEEPALIVE_MS > MIN_FRAME_GAP_MS * 10,
+        "the keepalive is frequent enough to be a second frame rate"
+    );
+};
 
 /// A config write triggers an ASYNCHRONOUS repaint inside the firmware that
 /// lands hundreds of milliseconds later and overwrites whatever frame was sent

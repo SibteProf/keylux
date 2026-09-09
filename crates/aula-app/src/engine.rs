@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 
 use aula_effects::registry::{Registry, Source};
 use aula_effects::{EffectMeta, Params, RenderCtx};
+use aula_protocol::f75::protocol as p;
 use aula_protocol::f75::{keymap, F75};
 use aula_protocol::{Frame, KeyPos, RgbDevice};
 
@@ -19,6 +20,8 @@ pub enum Cmd {
     /// Whole parameter set, so UI and engine cannot drift apart.
     SetParams(Params),
     SetRunning(bool),
+    /// Cap the write rate below the hardware ceiling.
+    SetMaxFps(u32),
     /// Re-scan the effects directory now.
     Rescan,
     Shutdown,
@@ -130,6 +133,7 @@ fn run(
     let mut params = current_params(&reg, selected);
     let mut effect_start = Instant::now();
     let mut running = true;
+    let mut max_fps = p::MAX_FPS;
 
     let mut fps_window = Instant::now();
     let mut fps_frames = 0u32;
@@ -153,6 +157,12 @@ fn run(
                 Ok(Cmd::SetRunning(r)) => {
                     running = r;
                     shared.lock().unwrap().running = r;
+                }
+                Ok(Cmd::SetMaxFps(f)) => {
+                    max_fps = f;
+                    if let Some(kb) = device.as_mut() {
+                        kb.set_max_fps(max_fps);
+                    }
                 }
                 Ok(Cmd::Rescan) => {
                     reg = Registry::with_all(&effects_dir, &anim_dir);
@@ -186,6 +196,7 @@ fn run(
                 last_open_attempt = Some(Instant::now());
                 match F75::open() {
                     Ok(mut kb) => {
+                        kb.set_max_fps(max_fps);
                         // Once, before any streaming.
                         let mode = kb.ensure_per_key_mode();
                         let mut s = shared.lock().unwrap();
@@ -218,11 +229,25 @@ fn run(
             continue;
         };
 
+        // Paused means paused: no rendering and no writes, so the board holds
+        // its last frame and the keyboard gets the bus entirely to itself.
+        // Blanking it and then streaming black would be all of the cost and
+        // none of the point.
+        if !running {
+            {
+                let mut s = shared.lock().unwrap();
+                s.fps = 0.0;
+            }
+            std::thread::sleep(Duration::from_millis(60));
+            repaint();
+            continue;
+        }
+
         // ---- render one frame ----
         let layout = kb.layout().to_vec();
         let mut frame = Frame::black(kb.led_count());
 
-        if running && !reg.is_empty() {
+        if !reg.is_empty() {
             let ctx = RenderCtx {
                 t: effect_start.elapsed().as_secs_f32(),
                 layout: &layout,

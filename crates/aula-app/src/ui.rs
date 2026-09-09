@@ -60,6 +60,8 @@ impl App {
             .unwrap_or_else(|| std::path::PathBuf::from("animations"));
         let _ = std::fs::create_dir_all(&anim_dir);
 
+        let settings = Settings::load();
+
         // Captured once at startup: the only way to reach a hidden window,
         // since egui cannot repaint one and so never runs `update` for it.
         let window = WindowRef::capture(cc);
@@ -88,6 +90,8 @@ impl App {
             })
         };
 
+        engine.send(Cmd::SetMaxFps(settings.max_fps));
+
         Self {
             engine,
             params: Params::default(),
@@ -99,7 +103,7 @@ impl App {
             last_tick: std::time::Instant::now(),
             notice: None,
 
-            settings: Settings::load(),
+            settings,
             tray,
             window,
             confirm_close: false,
@@ -253,9 +257,39 @@ impl App {
         }
     }
 
+    /// How hard to drive the keyboard.
+    ///
+    /// The board's 8051 scans the key matrix and services USB on the same
+    /// budget, so lighting traffic competes with typing. The default already
+    /// matches what the vendor driver does, but a busy machine or a marginal
+    /// cable can still push it over — hence a lever rather than a fixed number.
+    fn device_settings_ui(&mut self, ui: &mut egui::Ui) {
+        ui.collapsing("Keyboard", |ui| {
+            let ceiling = aula_protocol::f75::protocol::MAX_FPS;
+            let mut fps = self.settings.max_fps.clamp(1, ceiling);
+            let resp = ui
+                .add(egui::Slider::new(&mut fps, 4..=ceiling).text("Frame rate"))
+                .on_hover_text(
+                    "Lower this if the keyboard misses keypresses or repeats them.\n\
+                     Lighting traffic and key scanning share the same processor.",
+                );
+            if resp.changed() {
+                self.settings.max_fps = fps;
+                self.engine.send(Cmd::SetMaxFps(fps));
+            }
+            // Only persist once the drag ends, so a sweep across the slider
+            // does not write the file a hundred times.
+            if resp.drag_stopped() || (resp.changed() && !resp.dragged()) {
+                self.settings.save();
+            }
+            ui.weak("Unchanged frames are not resent, so a still effect uses no bandwidth.");
+        });
+    }
+
     /// Window behaviour, tucked at the bottom of the effects panel so a user
     /// who regrets a "remember my choice" can undo it without editing JSON.
     fn settings_ui(&mut self, ui: &mut egui::Ui) {
+        self.device_settings_ui(ui);
         ui.collapsing("Window", |ui| {
             if !self.can_hide() {
                 ui.weak("No system tray on this platform, so closing quits.");

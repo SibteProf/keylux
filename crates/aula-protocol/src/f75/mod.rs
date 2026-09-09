@@ -19,6 +19,9 @@ pub struct F75 {
     order: ChannelOrder,
     /// Enforces the minimum gap between colour writes.
     last_write: Option<Instant>,
+    min_gap: Duration,
+    /// Last frame actually sent, so identical ones can be skipped.
+    last_frame: Option<Frame>,
 }
 
 impl F75 {
@@ -33,6 +36,8 @@ impl F75 {
             layout: keymap::layout(),
             order,
             last_write: None,
+            min_gap: Duration::from_millis(p::MIN_FRAME_GAP_MS),
+            last_frame: None,
         })
     }
 
@@ -98,6 +103,9 @@ impl F75 {
         // written, otherwise the repaint lands on top of it.
         thread::sleep(Duration::from_millis(p::CONFIG_SETTLE_MS));
         self.last_write = Some(Instant::now());
+        // The repaint this triggers wipes whatever was on the board, so the
+        // next frame must go out even if it matches the cached one.
+        self.last_frame = None;
         Ok(())
     }
 
@@ -109,13 +117,20 @@ impl F75 {
             && cfg[p::mode::OFF_C] == p::mode::PER_KEY[2])
     }
 
+    /// Whether an unchanged frame is due to be resent anyway.
+    fn due_for_keepalive(&self) -> bool {
+        self.last_write
+            .map(|t| t.elapsed() >= Duration::from_millis(p::KEEPALIVE_MS))
+            .unwrap_or(true)
+    }
+
     /// Sleep out the remainder of the minimum inter-write gap.
     ///
     /// Writing faster than the firmware can absorb starves its key-scanning
     /// loop and the keyboard stops responding to keypresses until replugged.
     fn respect_gap(&mut self) {
         if let Some(prev) = self.last_write {
-            let min = Duration::from_millis(p::MIN_FRAME_GAP_MS);
+            let min = self.min_gap;
             let elapsed = prev.elapsed();
             if elapsed < min {
                 thread::sleep(min - elapsed);
@@ -195,6 +210,9 @@ impl RgbDevice for F75 {
     }
 
     fn set_static(&mut self, frame: &Frame) -> Result<()> {
+        // Different command and a different payload layout, so what the stream
+        // path has cached no longer describes the board.
+        self.last_frame = None;
         self.respect_gap();
         let payload = self.encode_static(frame);
         self.io.send(&p::build_packet(
@@ -206,6 +224,14 @@ impl RgbDevice for F75 {
     }
 
     fn stream(&mut self, frame: &Frame) -> Result<()> {
+        // Re-sending a frame the board is already showing buys nothing and
+        // costs key-scan time, so a still image or a paused effect settles to
+        // no traffic at all. The keepalive covers the one case where silence
+        // would be wrong: the firmware repainting itself behind our back.
+        if !self.due_for_keepalive() && self.last_frame.as_ref() == Some(frame) {
+            return Ok(());
+        }
+
         self.respect_gap();
         let payload = self.encode_stream(frame);
         self.io.send(&p::build_packet(
@@ -213,7 +239,18 @@ impl RgbDevice for F75 {
             p::ADDR,
             p::STREAM_LEN as u16,
             Some(&payload),
-        ))
+        ))?;
+        self.last_frame = Some(frame.clone());
+        Ok(())
+    }
+
+    fn set_max_fps(&mut self, fps: u32) {
+        // Only ever slower. The hardware ceiling is not a preference, and a
+        // caller asking for more than the firmware can absorb is asking for
+        // dropped keypresses.
+        let fps = fps.clamp(1, p::MAX_FPS);
+        let gap = 1000 / u64::from(fps);
+        self.min_gap = Duration::from_millis(gap.max(p::MIN_FRAME_GAP_MS));
     }
 }
 

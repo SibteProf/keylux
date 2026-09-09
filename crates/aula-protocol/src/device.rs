@@ -115,7 +115,19 @@ pub trait RgbDevice {
     fn set_static(&mut self, frame: &Frame) -> Result<()>;
 
     /// Push one animation frame. Safe to call repeatedly at up to `max_fps`.
+    ///
+    /// Implementations may skip a frame identical to the one already on the
+    /// device, so calling this in a tight loop with a static image is cheap.
     fn stream(&mut self, frame: &Frame) -> Result<()>;
+
+    /// Ask for a slower frame rate than the hardware ceiling.
+    ///
+    /// Only downward: `max_fps` is a hardware limit. Useful when a user would
+    /// rather have less bus traffic than smoother animation. Devices with no
+    /// rate control ignore it.
+    fn set_max_fps(&mut self, fps: u32) {
+        let _ = fps;
+    }
 }
 
 /// Convenience: a frame sized for a device.
