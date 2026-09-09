@@ -6,10 +6,15 @@
 //! the app must refuse to hide the window at all. `Tray::new` returning `None`
 //! is what the caller checks for.
 //!
-//! tray-icon delivers events on its own global channels, and those channels are
-//! only drained while something is polling them. egui does not repaint a hidden
-//! window, so a blocking reader thread forwards events into `pending` and asks
-//! for a repaint; the UI drains `pending` on the next frame.
+//! tray-icon delivers events on its own global channels, drained only while
+//! something polls them, so blocking reader threads do that here.
+//!
+//! Those threads run `on_action` directly rather than only queuing for the UI.
+//! They have to: eframe calls `App::update` in response to a redraw, and a
+//! hidden window is never asked to paint, so while the window is hidden
+//! `request_repaint` does nothing and the UI thread cannot be woken from inside
+//! egui at all. Clicking "Show" has to reach the windowing system on this
+//! thread. Actions are queued too, and replayed by `drain` once frames resume.
 
 use std::sync::{Arc, Mutex};
 
@@ -32,23 +37,30 @@ pub struct Tray {
     show_id: tray_icon::menu::MenuId,
     play_id: tray_icon::menu::MenuId,
     quit_id: tray_icon::menu::MenuId,
-    play_item: MenuItem,
     pending: Arc<Mutex<Vec<TrayAction>>>,
-    /// Last text pushed to the play/pause item, so we only touch the native
-    /// menu when it actually changes.
-    play_label: Option<bool>,
+    /// Last state written to the tooltip, so we only touch the native icon
+    /// when it actually changes.
+    last_tooltip: Option<String>,
 }
 
 impl Tray {
     /// Build the tray icon and start forwarding its events.
     ///
-    /// `repaint` wakes the UI so queued actions are handled promptly even while
-    /// the window is hidden.
-    pub fn new(repaint: impl Fn() + Send + Sync + 'static) -> Option<Self> {
+    /// `on_action` runs on the reader thread, the moment the click arrives.
+    /// That immediacy is the whole point: while the window is hidden the UI
+    /// thread is asleep and cannot be woken from inside egui, so anything that
+    /// must happen without a repaint — showing the window again above all —
+    /// has to happen here. Actions are queued as well, and `drain` replays them
+    /// on the next frame for the parts that do belong in the UI.
+    pub fn new(on_action: impl Fn(TrayAction) + Send + Sync + 'static) -> Option<Self> {
         let menu = Menu::new();
         let show = MenuItem::new("Show keylux", true, None);
-        let play = MenuItem::new("Pause lighting", true, None);
+        // Neutral label rather than "Pause"/"Resume": the text can only be
+        // changed from the UI thread, which is asleep whenever the window is
+        // hidden, so a stateful label would sit there lying to the user.
+        let play = MenuItem::new("Play / pause lighting", true, None);
         let quit = MenuItem::new("Quit", true, None);
+        let play_id = play.id().clone();
         menu.append_items(&[
             &show,
             &PredefinedMenuItem::separator(),
@@ -66,14 +78,21 @@ impl Tray {
             .ok()?;
 
         let pending = Arc::new(Mutex::new(Vec::new()));
-        let repaint = Arc::new(repaint);
+        let on_action = Arc::new(on_action);
+        let fire = {
+            let pending = Arc::clone(&pending);
+            let on_action = Arc::clone(&on_action);
+            move |action: TrayAction| {
+                pending.lock().unwrap().push(action);
+                on_action(action);
+            }
+        };
 
         // Menu clicks.
         {
-            let pending = Arc::clone(&pending);
-            let repaint = Arc::clone(&repaint);
+            let fire = fire.clone();
             let (show_id, play_id, quit_id) =
-                (show.id().clone(), play.id().clone(), quit.id().clone());
+                (show.id().clone(), play_id.clone(), quit.id().clone());
             std::thread::Builder::new()
                 .name("tray-menu".into())
                 .spawn(move || {
@@ -87,8 +106,7 @@ impl Tray {
                         } else {
                             continue;
                         };
-                        pending.lock().unwrap().push(action);
-                        repaint();
+                        fire(action);
                     }
                 })
                 .ok()?;
@@ -97,15 +115,12 @@ impl Tray {
         // Clicking the icon itself is the obvious way back to the window, and
         // plenty of people never think to open the menu.
         {
-            let pending = Arc::clone(&pending);
-            let repaint = Arc::clone(&repaint);
             std::thread::Builder::new()
                 .name("tray-icon".into())
                 .spawn(move || {
                     while let Ok(ev) = TrayIconEvent::receiver().recv() {
                         if let TrayIconEvent::DoubleClick { .. } = ev {
-                            pending.lock().unwrap().push(TrayAction::Show);
-                            repaint();
+                            fire(TrayAction::Show);
                         }
                     }
                 })
@@ -117,9 +132,8 @@ impl Tray {
             show_id: show.id().clone(),
             play_id: play.id().clone(),
             quit_id: quit.id().clone(),
-            play_item: play,
             pending,
-            play_label: None,
+            last_tooltip: None,
         })
     }
 
@@ -128,18 +142,16 @@ impl Tray {
         std::mem::take(&mut *self.pending.lock().unwrap())
     }
 
-    /// Keep the menu and tooltip in step with what the app is actually doing,
-    /// so the tray is readable without opening the window.
+    /// Put the device status in the tooltip, so the tray says something useful
+    /// without opening the window. Only runs while the window is visible; the
+    /// tooltip simply keeps its last value while hidden.
     pub fn sync(&mut self, running: bool, status: &str) {
-        if self.play_label != Some(running) {
-            self.play_item.set_text(if running {
-                "Pause lighting"
-            } else {
-                "Resume lighting"
-            });
-            self.play_label = Some(running);
+        let state = if running { "running" } else { "paused" };
+        let tip = format!("keylux — {status}, {state}");
+        if self.last_tooltip.as_deref() != Some(tip.as_str()) {
+            let _ = self.icon.set_tooltip(Some(&tip));
+            self.last_tooltip = Some(tip);
         }
-        let _ = self.icon.set_tooltip(Some(format!("keylux — {status}")));
     }
 
     /// Ids are unused outside construction, but keeping them makes the mapping

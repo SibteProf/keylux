@@ -9,6 +9,7 @@ use crate::editor::{self, Editor};
 use crate::engine::{Cmd, DeviceStatus, Engine};
 use crate::settings::{CloseAction, Settings};
 use crate::tray::{Tray, TrayAction};
+use crate::window_ctl::WindowRef;
 
 #[derive(PartialEq, Clone, Copy)]
 enum Tab {
@@ -33,6 +34,9 @@ pub struct App {
     /// `None` when the tray could not be created. Everything that hides the
     /// window checks this first — without a tray there would be no way back.
     tray: Option<Tray>,
+    /// `None` on platforms with no way to show a hidden window from off the UI
+    /// thread. Hiding is refused there for the same reason.
+    window: Option<WindowRef>,
     /// The close button was pressed and we are waiting on the user's answer.
     confirm_close: bool,
     /// Tick the "don't ask again" box in that dialog.
@@ -56,8 +60,33 @@ impl App {
             .unwrap_or_else(|| std::path::PathBuf::from("animations"));
         let _ = std::fs::create_dir_all(&anim_dir);
 
-        let repaint_ctx = cc.egui_ctx.clone();
-        let tray = Tray::new(move || repaint_ctx.request_repaint());
+        // Captured once at startup: the only way to reach a hidden window,
+        // since egui cannot repaint one and so never runs `update` for it.
+        let window = WindowRef::capture(cc);
+
+        let tray = {
+            let ctx = cc.egui_ctx.clone();
+            let tx = engine.sender();
+            let shared = std::sync::Arc::clone(&engine.shared);
+            Tray::new(move |action| {
+                match action {
+                    // Show the window here and now. Everything else about the
+                    // restore can wait for the frame this makes possible.
+                    TrayAction::Show | TrayAction::Quit => {
+                        if let Some(w) = window {
+                            w.show();
+                        }
+                    }
+                    // Handled entirely here, so pausing from the tray works
+                    // while hidden. `update` deliberately ignores it.
+                    TrayAction::TogglePlay => {
+                        let running = shared.lock().unwrap().running;
+                        let _ = tx.send(Cmd::SetRunning(!running));
+                    }
+                }
+                ctx.request_repaint();
+            })
+        };
 
         Self {
             engine,
@@ -72,6 +101,7 @@ impl App {
 
             settings: Settings::load(),
             tray,
+            window,
             confirm_close: false,
             remember_choice: false,
             hidden: false,
@@ -95,10 +125,10 @@ impl App {
 
     /// Hide the window, leaving the app alive in the tray.
     ///
-    /// Refuses if there is no tray icon: hiding the only window with no way to
-    /// get it back would strand the process.
+    /// Refuses unless there is both a tray to click and a way to act on that
+    /// click while hidden — otherwise the window would be unreachable.
     fn hide_to_tray(&mut self, ctx: &egui::Context, running: bool) -> bool {
-        if self.tray.is_none() {
+        if !self.can_hide() {
             return false;
         }
         if !self.settings.run_in_background && running {
@@ -120,6 +150,13 @@ impl App {
         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
     }
 
+    /// Whether the window can be hidden and got back again. Both halves are
+    /// required: the tray to ask with, and a way to show the window from the
+    /// thread that hears the asking.
+    fn can_hide(&self) -> bool {
+        self.tray.is_some() && self.window.is_some()
+    }
+
     /// Tray clicks, minimise-to-tray, and the close button.
     fn window_lifecycle(&mut self, ctx: &egui::Context, running: bool, status: &str) {
         if let Some(tray) = self.tray.as_mut() {
@@ -128,7 +165,9 @@ impl App {
         for action in self.tray.as_ref().map(Tray::drain).unwrap_or_default() {
             match action {
                 TrayAction::Show => self.restore(ctx),
-                TrayAction::TogglePlay => self.engine.send(Cmd::SetRunning(!running)),
+                // Already applied on the tray thread, so it works while the
+                // window is hidden. Re-sending here would undo it.
+                TrayAction::TogglePlay => {}
                 TrayAction::Quit => self.quit(ctx),
             }
         }
@@ -140,10 +179,10 @@ impl App {
 
         if ctx.input(|i| i.viewport().close_requested()) && !self.quitting {
             // Without a tray, close can only mean quit.
-            let action = if self.tray.is_none() {
-                CloseAction::Quit
-            } else {
+            let action = if self.can_hide() {
                 self.settings.close_action
+            } else {
+                CloseAction::Quit
             };
             match action {
                 CloseAction::Quit => self.quitting = true,
@@ -218,8 +257,8 @@ impl App {
     /// who regrets a "remember my choice" can undo it without editing JSON.
     fn settings_ui(&mut self, ui: &mut egui::Ui) {
         ui.collapsing("Window", |ui| {
-            if self.tray.is_none() {
-                ui.weak("No system tray available, so closing quits.");
+            if !self.can_hide() {
+                ui.weak("No system tray on this platform, so closing quits.");
                 return;
             }
             let mut dirty = false;

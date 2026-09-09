@@ -97,6 +97,12 @@ impl Engine {
     pub fn send(&self, cmd: Cmd) {
         let _ = self.tx.send(cmd);
     }
+
+    /// A sender for code that must reach the engine from another thread, such
+    /// as the tray reader threads.
+    pub fn sender(&self) -> Sender<Cmd> {
+        self.tx.clone()
+    }
 }
 
 impl Drop for Engine {

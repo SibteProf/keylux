@@ -9,6 +9,7 @@ mod engine;
 mod settings;
 mod tray;
 mod ui;
+mod window_ctl;
 
 fn effects_dir() -> std::path::PathBuf {
     // Alongside the executable when installed, or the repo's effects/ in dev.
