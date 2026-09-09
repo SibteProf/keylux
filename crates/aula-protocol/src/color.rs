@@ -52,6 +52,31 @@ impl Rgb {
         Self::from_f32(r, g, b)
     }
 
+    /// RGB to HSV: hue in 0.0..1.0 (wrapping), saturation and value 0.0..=1.0.
+    ///
+    /// The inverse of [`Rgb::from_hsv`]. Grey has no meaningful hue, so it
+    /// reports 0.
+    pub fn to_hsv(self) -> (f32, f32, f32) {
+        let r = f32::from(self.r) / 255.0;
+        let g = f32::from(self.g) / 255.0;
+        let b = f32::from(self.b) / 255.0;
+        let max = r.max(g).max(b);
+        let min = r.min(g).min(b);
+        let d = max - min;
+
+        let h = if d == 0.0 {
+            0.0
+        } else if max == r {
+            (((g - b) / d) % 6.0) / 6.0
+        } else if max == g {
+            (((b - r) / d) + 2.0) / 6.0
+        } else {
+            (((r - g) / d) + 4.0) / 6.0
+        };
+        let s = if max == 0.0 { 0.0 } else { d / max };
+        (h.rem_euclid(1.0), s, max)
+    }
+
     /// Parse `#rrggbb` or `rrggbb`.
     pub fn from_hex(s: &str) -> Option<Self> {
         let s = s.trim().trim_start_matches('#');

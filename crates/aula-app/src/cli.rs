@@ -8,8 +8,10 @@ use std::time::{Duration, Instant};
 
 use aula_effects::registry::{Registry, Source};
 use aula_effects::{Params, RenderCtx};
-use aula_protocol::f75::{keymap, F75};
-use aula_protocol::{Frame, RgbDevice};
+use aula_protocol::f75::keymap;
+use aula_protocol::{DeviceId, Frame, Keyboard, RgbDevice, ScanOptions};
+
+use crate::settings::Settings;
 
 fn effects_dir() -> std::path::PathBuf {
     // Next to the executable when installed, or the repo's effects/ in dev.
@@ -78,7 +80,7 @@ pub fn run() -> anyhow::Result<()> {
     let mut params = Params::from_specs(&meta.params);
     apply_cli_overrides(&args, &meta, &mut params);
 
-    let mut kb = F75::open()?;
+    let mut kb = open_device(&args)?;
     println!("Using {} ({})", kb.name(), kb.hid_path());
     // Once, before streaming. A config write inside the loop would trigger an
     // async repaint that overwrites frames.
@@ -138,6 +140,30 @@ fn script_error(entry: &aula_effects::registry::Entry) -> Option<String> {
 }
 
 /// `--speed 1.5 --color #ff00aa` style overrides, matched against declared params.
+/// Open the board a headless run should drive.
+///
+/// `--device vid:pid` targets one specifically; otherwise this honours whatever
+/// the GUI was last pinned to, so a user who picked their receiver in the app
+/// does not have to name it again here.
+fn open_device(args: &[String]) -> anyhow::Result<Keyboard> {
+    let settings = Settings::load();
+    let opts = ScanOptions {
+        allow: settings.allow_list(),
+        ..Default::default()
+    };
+    let explicit = args
+        .iter()
+        .position(|a| a == "--device")
+        .and_then(|i| args.get(i + 1))
+        .map(|s| s.parse::<DeviceId>())
+        .transpose()?;
+
+    Ok(match explicit.or_else(|| settings.pinned_device()) {
+        Some(id) => Keyboard::open_id(id, &opts)?,
+        None => Keyboard::open_best(&opts)?,
+    })
+}
+
 fn apply_cli_overrides(args: &[String], meta: &aula_effects::EffectMeta, params: &mut Params) {
     use aula_effects::{ParamKind, Value};
     use aula_protocol::Rgb;

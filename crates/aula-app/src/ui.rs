@@ -53,14 +53,18 @@ pub struct App {
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>, effects_dir: std::path::PathBuf) -> Self {
         let ctx = cc.egui_ctx.clone();
-        let engine = Engine::spawn(effects_dir.clone(), move || ctx.request_repaint());
+        let settings = Settings::load();
+        let engine = Engine::spawn(
+            effects_dir.clone(),
+            settings.pinned_device(),
+            settings.allow_list(),
+            move || ctx.request_repaint(),
+        );
         let anim_dir = effects_dir
             .parent()
             .map(|p| p.join("animations"))
             .unwrap_or_else(|| std::path::PathBuf::from("animations"));
         let _ = std::fs::create_dir_all(&anim_dir);
-
-        let settings = Settings::load();
 
         // Captured once at startup: the only way to reach a hidden window,
         // since egui cannot repaint one and so never runs `update` for it.
@@ -257,7 +261,7 @@ impl App {
         }
     }
 
-    /// How hard to drive the keyboard.
+    /// How hard to drive the keyboard, and which keyboard to drive.
     ///
     /// The board's 8051 scans the key matrix and services USB on the same
     /// budget, so lighting traffic competes with typing. The default already
@@ -265,10 +269,17 @@ impl App {
     /// cable can still push it over — hence a lever rather than a fixed number.
     fn device_settings_ui(&mut self, ui: &mut egui::Ui) {
         ui.collapsing("Keyboard", |ui| {
-            let ceiling = aula_protocol::f75::protocol::MAX_FPS;
+            self.device_picker_ui(ui);
+            ui.separator();
+
+            // The ceiling is the connected device's, not the protocol's: the
+            // wireless link is paced more slowly, and offering a rate the
+            // device will silently clamp reads as a bug.
+            let ceiling = self.engine.shared.lock().unwrap().max_fps_ceiling.max(1);
             let mut fps = self.settings.max_fps.clamp(1, ceiling);
+            let lo = 4.min(ceiling);
             let resp = ui
-                .add(egui::Slider::new(&mut fps, 4..=ceiling).text("Frame rate"))
+                .add(egui::Slider::new(&mut fps, lo..=ceiling).text("Frame rate"))
                 .on_hover_text(
                     "Lower this if the keyboard misses keypresses or repeats them.\n\
                      Lighting traffic and key scanning share the same processor.",
@@ -284,6 +295,91 @@ impl App {
             }
             ui.weak("Unchanged frames are not resent, so a still effect uses no bandwidth.");
         });
+    }
+
+    /// Pick which board to drive, and find receivers that are not built in.
+    ///
+    /// A 2.4 GHz receiver is a separate USB device with its own id, and that id
+    /// differs between production runs — so it cannot be shipped in the source
+    /// table and has to be found here once and remembered.
+    fn device_picker_ui(&mut self, ui: &mut egui::Ui) {
+        let (devices, pinned, scanning) = {
+            let s = self.engine.shared.lock().unwrap();
+            (s.devices.clone(), s.pinned, s.scanning)
+        };
+
+        let current = match pinned {
+            None => "Automatic (wired preferred)".to_string(),
+            Some(id) => devices
+                .iter()
+                .find(|d| d.id == id)
+                .map(|d| d.label.clone())
+                .unwrap_or_else(|| id.to_string()),
+        };
+
+        ui.horizontal(|ui| {
+            ui.label("Device");
+            egui::ComboBox::from_id_salt("device-picker")
+                .selected_text(current)
+                .show_ui(ui, |ui| {
+                    if ui
+                        .selectable_label(pinned.is_none(), "Automatic (wired preferred)")
+                        .clicked()
+                    {
+                        self.engine.send(Cmd::SelectDevice(None));
+                        self.settings.unpin_device();
+                        self.settings.save();
+                    }
+                    for d in &devices {
+                        let mut label = d.label.clone();
+                        if !d.present {
+                            label.push_str("  (not plugged in)");
+                        }
+                        if ui.selectable_label(pinned == Some(d.id), label).clicked() {
+                            self.engine.send(Cmd::SelectDevice(Some(d.id)));
+                            self.settings.remember_device(d.id);
+                            self.settings.save();
+                        }
+                    }
+                });
+            if scanning {
+                ui.spinner();
+            }
+        });
+
+        ui.horizontal(|ui| {
+            if ui
+                .button("🔍 Scan for receivers")
+                .on_hover_text(
+                    "Briefly opens each vendor HID collection read-only to see which one \
+                     answers.\nTo find yours: unplug the receiver, scan, plug it back in and \
+                     scan again — the entry that comes and goes is it.",
+                )
+                .clicked()
+            {
+                self.engine.send(Cmd::ScanDevices { deep: true });
+            }
+        });
+
+        // The side switch on the keyboard, not this picker, decides which link
+        // is actually driving the LEDs. Without this note, pinning the dongle
+        // while the switch is on wired looks like the app being broken.
+        ui.weak(
+            "The keyboard's own wired/2.4 GHz switch decides which link is live. \
+             Set it to match.",
+        );
+
+        if let DeviceStatus::Connected {
+            can_change_mode: false,
+            ..
+        } = self.engine.shared.lock().unwrap().status
+        {
+            ui.colored_label(
+                egui::Color32::from_rgb(230, 170, 60),
+                "Streaming only — nothing has confirmed this device, so lighting-mode \
+                 changes are refused.",
+            );
+        }
     }
 
     /// Window behaviour, tucked at the bottom of the effects panel so a user
@@ -430,6 +526,7 @@ impl eframe::App for App {
 
         let status_line = match &status {
             DeviceStatus::Connected { name, .. } => name.clone(),
+            DeviceStatus::Waiting { label, .. } => format!("waiting for {label}"),
             DeviceStatus::Disconnected(_) => "not connected".to_string(),
         };
         self.window_lifecycle(ctx, running, &status_line);
@@ -451,6 +548,24 @@ impl eframe::App for App {
                         ui.label(egui::RichText::new(name).strong());
                         ui.label(format!("{fps:.0} FPS"));
                         ui.weak(format!("{frames_sent} frames"));
+                    }
+                    // Amber, not red: the app is doing exactly what it was
+                    // told. The one-click way out matters more than the
+                    // message, so it sits right next to it.
+                    DeviceStatus::Waiting { label, .. } => {
+                        ui.colored_label(egui::Color32::from_rgb(230, 170, 60), "●");
+                        ui.label(format!("Waiting for {label}"));
+                        if ui
+                            .small_button("Use another device")
+                            .on_hover_text(
+                                "Go back to picking automatically, which prefers the wired board.",
+                            )
+                            .clicked()
+                        {
+                            self.engine.send(Cmd::SelectDevice(None));
+                            self.settings.unpin_device();
+                            self.settings.save();
+                        }
                     }
                     DeviceStatus::Disconnected(why) => {
                         ui.colored_label(egui::Color32::from_rgb(220, 90, 90), "●");

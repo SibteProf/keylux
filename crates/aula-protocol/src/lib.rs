@@ -1,8 +1,12 @@
 //! USB HID protocol for AULA RGB keyboards.
 //!
-//! Currently implements the **AULA F75** (`258a:010c`, Sinowealth 8051) in
-//! wired USB-C mode. The protocol was reverse-engineered from USBPcap captures
-//! of the vendor driver; see `docs/PROTOCOL.md` for the full write-up.
+//! Currently implements the **AULA F75** (`258a:010c`, Sinowealth 8051). The
+//! protocol was reverse-engineered from USBPcap captures of the vendor driver;
+//! see `docs/PROTOCOL.md` for the full write-up.
+//!
+//! A 2.4 GHz receiver is a **separate USB device** with the receiver chipset's
+//! own VID/PID, so it cannot be found by looking for the keyboard's id. It is
+//! found by scanning instead — see [`f75::F75::discover`] and [`ScanOptions`].
 //!
 //! # Quick start
 //!
@@ -32,18 +36,26 @@
 //! * **Config reads are validated** against the `5A A5` signature. The firmware
 //!   returns truncated all-zero buffers while busy, and writing one back would
 //!   corrupt the config block.
-//! * **Write rate is capped.** Writing faster than the firmware can absorb
-//!   starves its key-scanning loop and the keyboard stops responding to
-//!   keypresses until it is replugged.
+//! * **Write rate is capped, per link.** Writing faster than the firmware can
+//!   absorb starves its key-scanning loop and the keyboard stops responding to
+//!   keypresses until it is replugged. The wireless cap is deliberately slower
+//!   than the wired one.
+//! * **Discovery is read-only.** It opens only collections the OS has not
+//!   claimed, and identifies a board by reading its config block — never by
+//!   trying unknown command bytes, which could write firmware.
 
 pub mod color;
 pub mod device;
+pub mod dongle;
 pub mod f75;
+pub mod keyboard;
 pub mod transport;
 
 pub use color::{ChannelOrder, Rgb};
-pub use device::{Frame, KeyPos, RgbDevice};
+pub use device::{DeviceId, Frame, KeyPos, Link, ParseDeviceIdError, RgbDevice};
 pub use f75::F75;
+pub use keyboard::Keyboard;
+pub use transport::{Choice, Confidence, DeviceCandidate, ScanOptions};
 
 /// Errors this crate can produce.
 #[derive(Debug, thiserror::Error)]
@@ -52,22 +64,42 @@ pub enum Error {
     Hid(#[from] hidapi::HidError),
 
     #[error(
-        "no AULA keyboard found at {vid:04x}:{pid:04x}. \
-         This interface only exists in WIRED USB-C mode — a 2.4GHz dongle or \
-         Bluetooth link will not work. Set the side switch to wired, plug in \
-         the cable, and retry."
+        "no AULA keyboard found (checked {searched} known device id(s)). \
+         If the keyboard is on its 2.4 GHz receiver: the receiver is a separate \
+         USB device with its own id, so scan for it — in keylux, Keyboard ▸ Scan \
+         for receivers; from the CLI, `cargo run --example smoke -- scan --deep`. \
+         Bluetooth does not expose this interface."
     )]
-    NotFound { vid: u16, pid: u16 },
+    NotFound { searched: usize },
 
     #[error(
-        "found the keyboard but none of its {vendor_collections} vendor \
-         collection(s) accepted the RGB protocol{}",
-        .last.as_ref().map(|e| format!(" (last error: {e})")).unwrap_or_default()
+        "found matching hardware but none of its {vendor_collections} vendor \
+         collection(s) accepted the RGB protocol{}{}",
+        .last.as_ref().map(|e| format!(" (last error: {e})")).unwrap_or_default(),
+        // A collection that will not open at all is the signature of a missing
+        // udev rule, and the bare message gives a Linux user nothing to act on.
+        if cfg!(target_os = "linux") {
+            " — on Linux, a collection that will not open usually means the udev \
+             rule is missing; see packaging/99-aula.rules"
+        } else {
+            ""
+        }
     )]
     NoRgbInterface {
         vendor_collections: usize,
         last: Option<String>,
     },
+
+    #[error("the device at {path} is no longer there — it was probably unplugged")]
+    PathGone { path: String },
+
+    #[error(
+        "refused a config write on {id}, which nothing has confirmed as an AULA \
+         board. A config write is non-volatile and would change stored keyboard \
+         settings. Verify the device first; streaming colours to it is safe and \
+         stays available meanwhile."
+    )]
+    UnverifiedDevice { id: DeviceId },
 
     #[error(
         "config read failed: response missing the 5A A5 signature (got {:02x} {:02x}). \
@@ -85,3 +117,22 @@ pub enum Error {
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The old message told users outright that a 2.4 GHz dongle "will not
+    /// work". That was the belief this crate was built on, and it is now wrong
+    /// — so guard against it creeping back in a copy-paste.
+    #[test]
+    fn not_found_no_longer_claims_wireless_is_impossible() {
+        let msg = Error::NotFound { searched: 1 }.to_string();
+        assert!(!msg.contains("will not work"), "{msg}");
+        assert!(!msg.contains("WIRED USB-C"), "{msg}");
+        assert!(
+            msg.contains("scan"),
+            "it should say how to find a receiver: {msg}"
+        );
+    }
+}

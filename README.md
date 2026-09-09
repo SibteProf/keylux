@@ -60,16 +60,49 @@ sudo cp packaging/99-aula.rules /etc/udev/rules.d/
 sudo udevadm control --reload-rules && sudo udevadm trigger
 ```
 
+The rule covers the wired board. A 2.4 GHz receiver has its own id, so
+`packaging/99-aula.rules` carries a commented template to fill in with whatever
+`scan --deep` reports.
+
 ## Try it
 
-The keyboard must be in **wired USB-C mode** — the 2.4 GHz dongle and Bluetooth
-do not expose the RGB interface.
+Both **wired USB-C** and the **2.4 GHz receiver** work. Every command below picks
+whichever is attached; the wired board wins when both are.
+
+The two are different USB devices speaking different protocols, so they behave
+differently and the difference is not hideable:
+
+| | Wired | Receiver |
+| --- | --- | --- |
+| Rate | 21 FPS | **~8 FPS** full-board; faster for sparse effects |
+| Update | whole 378-byte framebuffer, one write | whole frame, ~10 writes of 20 bytes |
+| Cost driven by | nothing much | number of **distinct colours** |
+
+Colours on the receiver are **quantised** to a small palette, because a frame
+costs 4 bytes per distinct colour and has to fit one message. Wired sends each
+key a continuous colour, so a gradient flows through a key where the receiver
+steps through it.
+
+The receiver is also **throughput-limited**, to about 64 chunks per second —
+measured, and the vendor's own driver uses about a fifth of that. A whole-board
+frame is 8 chunks, so it lands at ~8 FPS; a sparse effect costs less and runs
+faster. Pushing past it does not fail cleanly: the board flickers between the
+new frame and the old, which looks like something fighting the effect for
+control of the colours.
+
+So full-board animation is a wired feature in practice, and the receiver is at
+its best with static colour and sparse effects — which is what the vendor's own
+software does with it. Its smooth wireless effects are **firmware** effects,
+rendered on the keyboard with the radio idle. `docs/PROTOCOL.md` has the
+arithmetic. Bluetooth exposes nothing on either.
 
 ```bash
-cargo run --example smoke -- info      # find the device, show which collection is used
-cargo run --example smoke -- red       # whole board red
-cargo run --example smoke -- wave 20   # streamed rainbow wave for 20 seconds
-cargo run --example smoke -- dry       # print packet headers, no hardware needed
+cargo run --example smoke -- scan             # devices that speak the protocol
+cargo run --example smoke -- scan --deep      # also look for a receiver
+cargo run --example smoke -- ping             # read the config block, write nothing
+cargo run --example smoke -- red              # whole board red
+cargo run --example smoke -- wave 20          # streamed rainbow wave for 20 seconds
+cargo run --example smoke -- dry              # print packet headers, no hardware needed
 ```
 
 ## Layout

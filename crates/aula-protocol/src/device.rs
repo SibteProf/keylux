@@ -3,6 +3,82 @@
 use crate::color::Rgb;
 use crate::Result;
 
+/// A USB device identity: what `hidapi` matches on.
+///
+/// Kept as a pair rather than two loose `u16`s because a keyboard and its
+/// receiver are two different USB devices, and once there is more than one of
+/// them, passing `vid` and `pid` separately is an argument-order bug waiting to
+/// happen.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct DeviceId {
+    pub vid: u16,
+    pub pid: u16,
+}
+
+impl DeviceId {
+    pub const fn new(vid: u16, pid: u16) -> Self {
+        Self { vid, pid }
+    }
+}
+
+impl std::fmt::Display for DeviceId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:04x}:{:04x}", self.vid, self.pid)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("expected a device id like \"258a:010c\"")]
+pub struct ParseDeviceIdError;
+
+impl std::str::FromStr for DeviceId {
+    type Err = ParseDeviceIdError;
+
+    /// Accepts `258a:010c` and `0x258A:0x010C`. This parses user-editable
+    /// settings and command-line arguments, so it is deliberately forgiving
+    /// about case and the `0x` prefix and strict about everything else.
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        let (v, p) = s.trim().split_once(':').ok_or(ParseDeviceIdError)?;
+        let hex = |t: &str| {
+            let t = t.trim();
+            let t = t
+                .strip_prefix("0x")
+                .or_else(|| t.strip_prefix("0X"))
+                .unwrap_or(t);
+            if t.is_empty() {
+                return Err(ParseDeviceIdError);
+            }
+            u16::from_str_radix(t, 16).map_err(|_| ParseDeviceIdError)
+        };
+        Ok(Self::new(hex(v)?, hex(p)?))
+    }
+}
+
+/// How the keyboard is attached.
+///
+/// This is not cosmetic: it selects the write pacing. The wired floor is
+/// measured, the wireless one is not, so the two must stay distinguishable all
+/// the way down to the frame gap.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Link {
+    #[default]
+    Wired,
+    Dongle,
+    /// Found by a scan of hardware that is not in any known-device list.
+    Unknown,
+}
+
+impl Link {
+    /// The parenthesised half of a device name, e.g. `AULA F75 (wired)`.
+    pub const fn suffix(self) -> &'static str {
+        match self {
+            Link::Wired => "wired",
+            Link::Dongle => "2.4 GHz dongle",
+            Link::Unknown => "unrecognised link",
+        }
+    }
+}
+
 /// One physical key: where it sits on the board, and which LED index drives it.
 ///
 /// `x` is the key centre in 1u units from the left edge, `row` is the row from
@@ -152,5 +228,33 @@ mod tests {
         f.add(0, Rgb::new(200, 0, 0));
         f.add(0, Rgb::new(100, 0, 0));
         assert_eq!(f.get(0), Rgb::new(255, 0, 0));
+    }
+
+    #[test]
+    fn device_id_round_trips_through_text() {
+        let id = DeviceId::new(0x258a, 0x010c);
+        assert_eq!(id.to_string(), "258a:010c");
+        assert_eq!("258a:010c".parse::<DeviceId>().unwrap(), id);
+        // Settings files are hand-editable, so tolerate the obvious variants.
+        assert_eq!("0x258A:0x010C".parse::<DeviceId>().unwrap(), id);
+        assert_eq!(" 258a:010c ".parse::<DeviceId>().unwrap(), id);
+    }
+
+    #[test]
+    fn malformed_device_ids_are_rejected() {
+        for bad in [
+            "nonsense",
+            "258a",
+            "258a:",
+            ":010c",
+            "258a:010c:1",
+            "",
+            "zzzz:010c",
+        ] {
+            assert!(
+                bad.parse::<DeviceId>().is_err(),
+                "{bad:?} should not parse as a device id"
+            );
+        }
     }
 }

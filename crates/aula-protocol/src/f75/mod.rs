@@ -7,11 +7,15 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::color::ChannelOrder;
-use crate::device::{Frame, KeyPos, RgbDevice};
-use crate::transport::Transport;
+use crate::device::{DeviceId, Frame, KeyPos, Link, RgbDevice};
+use crate::transport::{
+    self, Choice, Confidence, DeviceCandidate, ScanOptions, ScanSpec, Transport,
+};
 use crate::{Error, Result};
 
 use protocol as p;
+
+pub const MODEL: &str = "AULA F75";
 
 pub struct F75 {
     io: Transport,
@@ -22,27 +26,163 @@ pub struct F75 {
     min_gap: Duration,
     /// Last frame actually sent, so identical ones can be skipped.
     last_frame: Option<Frame>,
+    id: DeviceId,
+    link: Link,
+    /// Owned rather than a `&'static str`, because the name now says how the
+    /// board is attached and that is only known at open time.
+    name: String,
+    /// Whether a config write is allowed. False for a device a scan turned up
+    /// but nothing has confirmed: streaming to it is volatile and harmless,
+    /// where a config write is neither.
+    allow_config_write: bool,
+}
+
+/// The gap to use for a requested frame rate on a link.
+///
+/// Split out as a free function so the clamping rule — which is what stands
+/// between a user's FPS slider and a keyboard that drops keypresses — can be
+/// tested without hardware.
+pub(crate) fn clamped_gap(requested_fps: u32, link: Link) -> Duration {
+    let floor = p::min_frame_gap_ms(link);
+    // Only ever slower. The hardware ceiling is not a preference, and a caller
+    // asking for more than the firmware can absorb is asking for dropped
+    // keypresses.
+    let fps = requested_fps.clamp(1, p::max_fps_for(link));
+    let gap = 1000 / u64::from(fps);
+    Duration::from_millis(gap.max(floor))
+}
+
+/// What a scan for this model looks for.
+fn scan_spec<'a>(opts: &'a ScanOptions) -> ScanSpec<'a> {
+    ScanSpec {
+        model: MODEL,
+        report_id: p::REPORT_ID,
+        packet_len: p::PACKET_LEN,
+        known: p::KNOWN,
+        opts,
+    }
+}
+
+/// Confirm a probed collection really is an AULA board.
+///
+/// Reads the config block and checks the `5A A5` signature. `0x84` is a read
+/// command the vendor driver itself issues, so this stays inside the safety
+/// rule in `docs/PROTOCOL.md`: identify hardware by reading, never by trying
+/// write commands. "Accepted a feature report" on its own is a weak signal
+/// across a bus full of vendor collections; a valid config block is not.
+///
+/// This RETRIES, for the same reason [`F75::read_config`] does: the firmware
+/// returns truncated, mostly-zero buffers while it is busy, and a board that
+/// has only just been plugged in is exactly when this runs. A single-shot read
+/// labels a perfectly good wired keyboard "not answering".
+fn speaks_the_protocol(io: &Transport) -> bool {
+    const ATTEMPTS: usize = 4;
+    for attempt in 0..ATTEMPTS {
+        if attempt > 0 {
+            thread::sleep(Duration::from_millis(30));
+        }
+        if io
+            .send(&p::build_packet(
+                p::cmd::READ_CONFIG,
+                p::ADDR,
+                p::CONFIG_LEN as u16,
+                None,
+            ))
+            .is_err()
+        {
+            // A collection that will not even take the command is not ours,
+            // and waiting will not change that.
+            return false;
+        }
+        if let Ok(resp) = io.receive() {
+            if resp.len() >= p::HEADER_LEN + p::CONFIG_LEN
+                && p::is_valid_config(&resp[p::HEADER_LEN..p::HEADER_LEN + p::CONFIG_LEN])
+            {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 impl F75 {
+    /// Open the best available board: wired first, then a receiver.
     pub fn open() -> Result<Self> {
         Self::open_with(ChannelOrder::Rgb)
     }
 
     pub fn open_with(order: ChannelOrder) -> Result<Self> {
-        let io = Transport::open(p::VENDOR_ID, p::PRODUCT_ID, p::REPORT_ID, p::PACKET_LEN)?;
+        Self::open_best(&ScanOptions::default(), order)
+    }
+
+    /// Open the best candidate a scan with these options turns up.
+    pub fn open_best(opts: &ScanOptions, order: ChannelOrder) -> Result<Self> {
+        let found = Self::discover(opts)?;
+        match transport::choose(&found, None) {
+            Choice::Use(i) => Self::open_candidate(&found[i], order),
+            _ => Err(Error::NotFound {
+                searched: p::KNOWN.len() + opts.allow.len(),
+            }),
+        }
+    }
+
+    /// Every device that answers this protocol.
+    ///
+    /// Read-only. With the default options it looks only at known and
+    /// allow-listed ids; `opts.deep` widens it to unrecognised hardware and is
+    /// for user-initiated scans only.
+    pub fn discover(opts: &ScanOptions) -> Result<Vec<DeviceCandidate>> {
+        transport::discover_with(&scan_spec(opts), speaks_the_protocol)
+    }
+
+    /// The same scan, keeping every near-miss. For diagnostics.
+    pub fn probe(opts: &ScanOptions) -> Result<Vec<transport::CollectionProbe>> {
+        transport::probe_with(&scan_spec(opts), speaks_the_protocol)
+    }
+
+    pub fn open_candidate(c: &DeviceCandidate, order: ChannelOrder) -> Result<Self> {
+        let io = Transport::open_path(&c.path, p::REPORT_ID, p::PACKET_LEN)?;
         Ok(Self {
             io,
             layout: keymap::layout(),
             order,
             last_write: None,
-            min_gap: Duration::from_millis(p::MIN_FRAME_GAP_MS),
+            min_gap: Duration::from_millis(p::min_frame_gap_ms(c.link)),
             last_frame: None,
+            id: c.id,
+            link: c.link,
+            name: format!("{MODEL} ({})", c.link.suffix()),
+            // A board that returned a valid config block has proven what it is.
+            allow_config_write: c.confidence == Confidence::Known || c.confirmed,
         })
+    }
+
+    /// Open one specific device, by id.
+    pub fn open_id(id: DeviceId, opts: &ScanOptions, order: ChannelOrder) -> Result<Self> {
+        let found = Self::discover(opts)?;
+        match transport::choose(&found, Some(id)) {
+            Choice::Use(i) => Self::open_candidate(&found[i], order),
+            _ => Err(Error::NotFound {
+                searched: p::KNOWN.len() + opts.allow.len(),
+            }),
+        }
     }
 
     pub fn hid_path(&self) -> &str {
         &self.io.path
+    }
+
+    pub fn id(&self) -> DeviceId {
+        self.id
+    }
+
+    pub fn link(&self) -> Link {
+        self.link
+    }
+
+    /// Whether this board will accept a lighting-mode change.
+    pub fn can_change_mode(&self) -> bool {
+        self.allow_config_write
     }
 
     pub fn set_channel_order(&mut self, order: ChannelOrder) {
@@ -73,7 +213,13 @@ impl F75 {
                 }
                 last = cfg;
             }
-            thread::sleep(Duration::from_millis(20));
+            // The radio is slower to answer, so give it proportionally longer
+            // before deciding a read was a glitch rather than latency.
+            thread::sleep(Duration::from_millis(if self.link == Link::Wired {
+                20
+            } else {
+                40
+            }));
         }
         Err(Error::BadConfigRead {
             magic: if last.len() == p::CONFIG_LEN {
@@ -90,6 +236,11 @@ impl F75 {
     /// and triggers an async repaint that overwrites in-flight frames — it must
     /// never happen from an animation loop.
     fn write_config(&mut self, cfg: &[u8]) -> Result<()> {
+        // The one non-volatile operation in the driver, so it is also the one
+        // that must not run on hardware a scan merely found.
+        if !self.allow_config_write {
+            return Err(Error::UnverifiedDevice { id: self.id });
+        }
         if !p::is_valid_config(cfg) {
             return Err(Error::RefusedConfigWrite);
         }
@@ -101,7 +252,7 @@ impl F75 {
         ))?;
         // Let the firmware's asynchronous repaint finish before any frame is
         // written, otherwise the repaint lands on top of it.
-        thread::sleep(Duration::from_millis(p::CONFIG_SETTLE_MS));
+        thread::sleep(Duration::from_millis(p::config_settle_ms(self.link)));
         self.last_write = Some(Instant::now());
         // The repaint this triggers wipes whatever was on the board, so the
         // next frame must go out even if it matches the cached one.
@@ -181,7 +332,7 @@ impl F75 {
 
 impl RgbDevice for F75 {
     fn name(&self) -> &str {
-        "AULA F75"
+        &self.name
     }
 
     fn led_count(&self) -> usize {
@@ -195,7 +346,7 @@ impl RgbDevice for F75 {
     }
 
     fn max_fps(&self) -> u32 {
-        p::MAX_FPS
+        p::max_fps_for(self.link)
     }
 
     fn ensure_per_key_mode(&mut self) -> Result<bool> {
@@ -245,12 +396,7 @@ impl RgbDevice for F75 {
     }
 
     fn set_max_fps(&mut self, fps: u32) {
-        // Only ever slower. The hardware ceiling is not a preference, and a
-        // caller asking for more than the firmware can absorb is asking for
-        // dropped keypresses.
-        let fps = fps.clamp(1, p::MAX_FPS);
-        let gap = 1000 / u64::from(fps);
-        self.min_gap = Duration::from_millis(gap.max(p::MIN_FRAME_GAP_MS));
+        self.min_gap = clamped_gap(fps, self.link);
     }
 }
 
@@ -324,5 +470,44 @@ mod tests {
         let f = Frame::solid(p::STATIC_SLOTS, Rgb::WHITE);
         assert_eq!(encode_static_with(ChannelOrder::Rgb, &f).len(), 384);
         assert_eq!(encode_stream_with(ChannelOrder::Rgb, &f).len(), 378);
+    }
+
+    /// The clamp is what stands between a user's FPS slider and a keyboard that
+    /// drops keypresses, so it is tested directly rather than through a device.
+    #[test]
+    fn a_frame_rate_request_can_only_ever_slow_things_down() {
+        for link in [Link::Wired, Link::Dongle, Link::Unknown] {
+            let floor = Duration::from_millis(p::min_frame_gap_ms(link));
+            // Never faster than the floor. It may land slightly slower: the
+            // ceiling is a whole number of frames per second, so 21 FPS on the
+            // wired board is a 47 ms gap rather than exactly 46.
+            assert!(
+                clamped_gap(60, link) >= floor,
+                "{link:?} let a fast request through"
+            );
+            assert!(clamped_gap(u32::MAX, link) >= floor, "{link:?}");
+            assert_eq!(
+                clamped_gap(60, link),
+                clamped_gap(p::max_fps_for(link), link),
+                "{link:?} an over-fast request should land on the ceiling"
+            );
+            assert_eq!(
+                clamped_gap(1, link),
+                Duration::from_millis(1000),
+                "{link:?}"
+            );
+            // Zero is not a rate. It must not divide by zero or ask for a
+            // busy-loop; it lands on the slowest setting instead.
+            assert_eq!(
+                clamped_gap(0, link),
+                Duration::from_millis(1000),
+                "{link:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_radio_is_paced_more_gently_than_the_cable() {
+        assert!(clamped_gap(60, Link::Dongle) > clamped_gap(60, Link::Wired));
     }
 }

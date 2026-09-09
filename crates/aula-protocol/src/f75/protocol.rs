@@ -13,9 +13,27 @@
 //! bytes 8..   payload, zero padded to 512
 //! ```
 
-/// Wired USB-C mode. The 2.4 GHz dongle and Bluetooth do not expose this.
+use crate::device::{DeviceId, Link};
+
+/// Wired USB-C mode.
+///
+/// The keyboard's own USB identity. Its 2.4 GHz receiver is a SEPARATE USB
+/// device with the receiver chipset's VID/PID, so it never appears here — see
+/// `KNOWN` and `crate::transport::discover_with`.
 pub const VENDOR_ID: u16 = 0x258a; // Sinowealth
 pub const PRODUCT_ID: u16 = 0x010c; // AULA F75
+
+/// The wired board, as a device id.
+pub const WIRED: DeviceId = DeviceId::new(VENDOR_ID, PRODUCT_ID);
+
+/// Devices confirmed on hardware to speak this protocol.
+///
+/// A 2.4 GHz receiver enumerates under its own chipset's VID/PID, which cannot
+/// be derived from the keyboard's and differs between production runs — so a
+/// receiver can only be added here once someone has confirmed one. Until then
+/// users find theirs with a scan and it is remembered in their settings; see
+/// `docs/PROTOCOL.md`.
+pub const KNOWN: &[(DeviceId, Link)] = &[(WIRED, Link::Wired)];
 
 pub const REPORT_ID: u8 = 0x06;
 pub const HEADER_LEN: usize = 8;
@@ -89,6 +107,41 @@ pub const STREAM_SLOTS: usize = STREAM_LEN / 3; // 126
 pub const MIN_FRAME_GAP_MS: u64 = 46;
 pub const MAX_FPS: u32 = (1000 / MIN_FRAME_GAP_MS) as u32;
 
+/// Minimum gap between writes over the 2.4 GHz receiver.
+///
+/// UNLIKE `MIN_FRAME_GAP_MS`, this is a GUESS, not a measurement. Nobody has
+/// captured the vendor driver over the dongle. The radio adds latency and
+/// retries on top of the same 8051 that still has to scan the key matrix, so it
+/// starts at half the wired rate and comes down only when a capture says it
+/// can. Erring slow costs smoothness; erring fast costs keypresses, and the
+/// partial-starvation failure reads as a broken switch rather than as a
+/// lighting bug.
+pub const DONGLE_MIN_FRAME_GAP_MS: u64 = 92; // ~10 FPS
+
+/// The write pacing floor for a link.
+pub const fn min_frame_gap_ms(link: Link) -> u64 {
+    match link {
+        Link::Wired => MIN_FRAME_GAP_MS,
+        // An unrecognised link gets the cautious number, not the fast one.
+        Link::Dongle | Link::Unknown => DONGLE_MIN_FRAME_GAP_MS,
+    }
+}
+
+/// The sustainable frame rate for a link, derived from its gap.
+pub const fn max_fps_for(link: Link) -> u32 {
+    (1000 / min_frame_gap_ms(link)) as u32
+}
+
+/// How long to wait for the firmware's asynchronous repaint after a config
+/// write. The radio makes it land later, and a per-key mode change that "did
+/// not take" is usually this wait being too short.
+pub const fn config_settle_ms(link: Link) -> u64 {
+    match link {
+        Link::Wired => CONFIG_SETTLE_MS,
+        Link::Dongle | Link::Unknown => CONFIG_SETTLE_MS * 2,
+    }
+}
+
 /// Resend an unchanged frame at least this often.
 ///
 /// Identical frames are otherwise skipped, which costs nothing visually and
@@ -116,6 +169,20 @@ const _: () = {
     // and the resend has to be rare enough to cost nothing.
     assert!(
         KEEPALIVE_MS > MIN_FRAME_GAP_MS * 10,
+        "the keepalive is frequent enough to be a second frame rate"
+    );
+    // A second link must never be able to undercut the measured wired floor.
+    // This is the invariant that makes adding a link safe by construction.
+    assert!(
+        DONGLE_MIN_FRAME_GAP_MS >= MIN_FRAME_GAP_MS,
+        "a wireless link may only be gentler than the wired floor, never faster"
+    );
+    assert!(
+        max_fps_for(Link::Dongle) as u64 * min_frame_gap_ms(Link::Dongle) <= 1000,
+        "the advertised wireless frame rate needs a tighter gap than the driver enforces"
+    );
+    assert!(
+        KEEPALIVE_MS > DONGLE_MIN_FRAME_GAP_MS * 10,
         "the keepalive is frequent enough to be a second frame rate"
     );
 };
@@ -232,5 +299,39 @@ mod tests {
     fn stream_slot_count_is_exact() {
         assert_eq!(STREAM_LEN % 3, 0);
         assert_eq!(STREAM_SLOTS, 126);
+    }
+
+    /// Duplicates the const asserts on purpose: a failing test names the link
+    /// that broke the rule, where a failing const assert only names the file.
+    /// It also survives someone adding a `Link` variant and forgetting the gap.
+    #[test]
+    fn every_link_is_paced_at_or_below_the_wired_floor() {
+        for link in [Link::Wired, Link::Dongle, Link::Unknown] {
+            let gap = min_frame_gap_ms(link);
+            assert!(
+                gap >= MIN_FRAME_GAP_MS,
+                "{link:?} writes faster than the measured wired floor"
+            );
+            assert!(
+                u64::from(max_fps_for(link)) * gap <= 1000,
+                "{link:?} advertises a frame rate its own gap cannot sustain"
+            );
+            assert!(
+                max_fps_for(link) >= 1,
+                "{link:?} cannot manage one frame a second"
+            );
+        }
+    }
+
+    #[test]
+    fn the_radio_gets_a_longer_settle_wait_than_the_cable() {
+        assert!(config_settle_ms(Link::Dongle) > config_settle_ms(Link::Wired));
+    }
+
+    #[test]
+    fn the_wired_board_is_a_known_device() {
+        assert!(KNOWN
+            .iter()
+            .any(|(id, link)| *id == WIRED && *link == Link::Wired));
     }
 }
