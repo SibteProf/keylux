@@ -134,8 +134,7 @@ pub fn run() -> anyhow::Result<()> {
 }
 
 fn script_error(entry: &aula_effects::registry::Entry) -> Option<String> {
-    let _ = entry;
-    None // ScriptEffect keeps this; surfaced properly once the GUI owns the loop
+    entry.runtime_error().map(str::to_string)
 }
 
 /// `--speed 1.5 --color #ff00aa` style overrides, matched against declared params.

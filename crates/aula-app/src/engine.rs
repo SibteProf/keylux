@@ -47,8 +47,12 @@ pub struct Shared {
     pub status: DeviceStatus,
     pub effects: Vec<EffectInfo>,
     pub selected: usize,
-    /// Script load failures and runtime errors, newest last.
+    /// Script load failures, newest last.
     pub errors: Vec<String>,
+    /// Why the *selected* effect's last frame failed, if it did. Kept apart
+    /// from `errors` because it clears itself the moment the script renders
+    /// again, where a load failure persists until the file is fixed.
+    pub script_error: Option<String>,
     pub running: bool,
     pub frames_sent: u64,
 }
@@ -63,6 +67,7 @@ impl Shared {
             effects: Vec::new(),
             selected: 0,
             errors: Vec::new(),
+            script_error: None,
             running: true,
             frames_sent: 0,
         }
@@ -220,6 +225,20 @@ fn run(
                 params: &params,
             };
             reg.entries[selected].effect_mut().render(&ctx, &mut frame);
+        }
+
+        // A script that throws leaves the previous frame up, which on its own
+        // looks like the app has quietly frozen. Publish the reason.
+        let script_error = reg
+            .entries
+            .get(selected)
+            .and_then(|e| e.runtime_error())
+            .map(str::to_string);
+        {
+            let mut s = shared.lock().unwrap();
+            if s.script_error != script_error {
+                s.script_error = script_error;
+            }
         }
 
         match kb.stream(&frame) {

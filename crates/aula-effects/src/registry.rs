@@ -24,6 +24,12 @@ impl Entry {
     pub fn effect_mut(&mut self) -> &mut dyn Effect {
         self.effect.as_mut()
     }
+
+    /// Why this effect's last frame failed, if it did. Always `None` for
+    /// built-ins; scripts report typos and bad return values here.
+    pub fn runtime_error(&self) -> Option<&str> {
+        self.effect.runtime_error()
+    }
 }
 
 /// Everything the user can pick from.

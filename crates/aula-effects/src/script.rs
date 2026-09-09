@@ -176,6 +176,10 @@ impl Effect for ScriptEffect {
             }
         }
     }
+
+    fn runtime_error(&self) -> Option<&str> {
+        self.last_error.as_deref()
+    }
 }
 
 /// Engine with the helpers scripts are expected to have.

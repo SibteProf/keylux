@@ -37,7 +37,6 @@ impl Editor {
     }
 
     /// Open an existing animation for editing.
-    #[allow(dead_code)] // used once the "edit this animation" button lands
     pub fn from_animation(anim: Animation, file_name: String) -> Self {
         Self {
             selected: 0,

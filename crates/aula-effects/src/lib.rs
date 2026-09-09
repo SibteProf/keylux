@@ -73,6 +73,15 @@ pub trait Effect: Send {
 
     /// Draw one frame. `out` arrives cleared to black.
     fn render(&mut self, ctx: &RenderCtx, out: &mut Frame);
+
+    /// Why the last frame did not render as intended, if anything went wrong.
+    ///
+    /// Built-ins never fail, so this defaults to `None`. Scripts do: a typo in
+    /// a user's `render` surfaces here rather than as a panic or a silently
+    /// frozen board, and the GUI can put the message in front of them.
+    fn runtime_error(&self) -> Option<&str> {
+        None
+    }
 }
 
 /// Keys wide enough that lighting them as a single "pixel" swamps a pattern.
