@@ -6,6 +6,8 @@
 mod cli;
 mod editor;
 mod engine;
+mod settings;
+mod tray;
 mod ui;
 
 fn effects_dir() -> std::path::PathBuf {

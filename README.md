@@ -7,8 +7,9 @@ Per-key colour and smooth animation over USB, with no vendor software and no
 firmware modification. Write your own effects as small scripts — no Rust
 toolchain required.
 
-> **Status: early.** The protocol is reverse-engineered, documented and
-> verified on hardware. The Rust port is in progress; see [Roadmap](#roadmap).
+> **Status: early but usable.** The protocol is reverse-engineered, documented
+> and verified on hardware, and the app runs effects, scripts and animations.
+> Only the F75 is supported so far; see [Roadmap](#roadmap).
 
 ## Why
 
@@ -25,6 +26,13 @@ genuinely surprising — and turns it into something usable.
 - Per-key static colour (persists across reboots)
 - Smooth animation at the hardware's real ceiling of ~21 FPS
 - Correct LED map, derived from the keyboard's own key-matrix table
+- Desktop app with a live keyboard preview and controls generated from each
+  effect's own parameter declaration
+- Built-in effects: solid, wave, sweep, bloom, scrolling text
+- User effects as `.rhai` scripts, hot-reloaded from `effects/`
+- Keyframe animations: paint them in the timeline editor, or import a GIF,
+  image or folder of frames
+- Runs in the system tray, so the lighting keeps going with the window closed
 
 See [`docs/PROTOCOL.md`](docs/PROTOCOL.md) for the complete protocol.
 
@@ -79,11 +87,29 @@ reference/         the original TypeScript prototype, kept as provenance
 
 - [x] Protocol reverse-engineered and documented
 - [x] `aula-protocol`: transport, F75 driver, LED map
-- [] Hardware verification of the Rust port
-- [ ] Port remaining effects (sweep, bloom, scrolling text)
-- [ ] Rhai scripting host with hot reload
-- [ ] egui app: live keyboard preview, effect picker, auto-generated controls
+- [x] Hardware verification of the Rust port
+- [x] Port remaining effects (sweep, bloom, scrolling text)
+- [x] Rhai scripting host with hot reload
+- [x] egui app: live keyboard preview, effect picker, auto-generated controls
+- [x] Timeline editor and GIF/image import
+- [x] System tray
 - [ ] Packaged releases
+- [ ] A second device behind the same `RgbDevice` trait
+
+## Running in the tray
+
+Closing the window asks whether to minimise to the tray or quit, and can
+remember the answer. Minimising hides to the tray as well. Both, plus whether
+the lighting keeps rendering while hidden, are under **Window** at the bottom of
+the effects panel.
+
+The tray icon's menu has *Show*, *Pause/Resume lighting* and *Quit*; a
+double-click reopens the window. If the tray icon cannot be created, the app
+never hides the window — closing simply quits, because there would be no way
+back.
+
+Preferences live in `%APPDATA%\keylux\settings.json` (or
+`~/.config/keylux/settings.json`), and can be edited or deleted by hand.
 
 ## Writing an effect
 

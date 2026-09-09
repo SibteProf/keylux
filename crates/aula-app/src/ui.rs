@@ -7,6 +7,8 @@ use aula_protocol::Rgb;
 
 use crate::editor::{self, Editor};
 use crate::engine::{Cmd, DeviceStatus, Engine};
+use crate::settings::{CloseAction, Settings};
+use crate::tray::{Tray, TrayAction};
 
 #[derive(PartialEq, Clone, Copy)]
 enum Tab {
@@ -26,6 +28,22 @@ pub struct App {
     editor: Option<Editor>,
     last_tick: std::time::Instant,
     notice: Option<String>,
+
+    settings: Settings,
+    /// `None` when the tray could not be created. Everything that hides the
+    /// window checks this first — without a tray there would be no way back.
+    tray: Option<Tray>,
+    /// The close button was pressed and we are waiting on the user's answer.
+    confirm_close: bool,
+    /// Tick the "don't ask again" box in that dialog.
+    remember_choice: bool,
+    /// The window is hidden in the tray.
+    hidden: bool,
+    /// A quit is already in flight, so the next close request is ours and must
+    /// not be intercepted again.
+    quitting: bool,
+    /// Whether lighting was running when we hid, so restoring puts it back.
+    resume_on_show: bool,
 }
 
 impl App {
@@ -38,6 +56,9 @@ impl App {
             .unwrap_or_else(|| std::path::PathBuf::from("animations"));
         let _ = std::fs::create_dir_all(&anim_dir);
 
+        let repaint_ctx = cc.egui_ctx.clone();
+        let tray = Tray::new(move || repaint_ctx.request_repaint());
+
         Self {
             engine,
             params: Params::default(),
@@ -48,7 +69,196 @@ impl App {
             editor: None,
             last_tick: std::time::Instant::now(),
             notice: None,
+
+            settings: Settings::load(),
+            tray,
+            confirm_close: false,
+            remember_choice: false,
+            hidden: false,
+            quitting: false,
+            resume_on_show: false,
         }
+    }
+
+    /// Bring the window back from the tray.
+    fn restore(&mut self, ctx: &egui::Context) {
+        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+        if self.hidden && self.resume_on_show {
+            self.engine.send(Cmd::SetRunning(true));
+            self.resume_on_show = false;
+        }
+        self.hidden = false;
+        self.confirm_close = false;
+    }
+
+    /// Hide the window, leaving the app alive in the tray.
+    ///
+    /// Refuses if there is no tray icon: hiding the only window with no way to
+    /// get it back would strand the process.
+    fn hide_to_tray(&mut self, ctx: &egui::Context, running: bool) -> bool {
+        if self.tray.is_none() {
+            return false;
+        }
+        if !self.settings.run_in_background && running {
+            self.engine.send(Cmd::SetRunning(false));
+            self.resume_on_show = true;
+        }
+        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+        self.hidden = true;
+        self.confirm_close = false;
+        true
+    }
+
+    fn quit(&mut self, ctx: &egui::Context) {
+        self.quitting = true;
+        self.confirm_close = false;
+        // Unhide first: a hidden window that is closing never processes the
+        // close on some platforms, leaving the process running invisibly.
+        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+    }
+
+    /// Tray clicks, minimise-to-tray, and the close button.
+    fn window_lifecycle(&mut self, ctx: &egui::Context, running: bool, status: &str) {
+        if let Some(tray) = self.tray.as_mut() {
+            tray.sync(running, status);
+        }
+        for action in self.tray.as_ref().map(Tray::drain).unwrap_or_default() {
+            match action {
+                TrayAction::Show => self.restore(ctx),
+                TrayAction::TogglePlay => self.engine.send(Cmd::SetRunning(!running)),
+                TrayAction::Quit => self.quit(ctx),
+            }
+        }
+
+        let minimized = ctx.input(|i| i.viewport().minimized).unwrap_or(false);
+        if minimized && !self.hidden && self.settings.minimize_to_tray {
+            self.hide_to_tray(ctx, running);
+        }
+
+        if ctx.input(|i| i.viewport().close_requested()) && !self.quitting {
+            // Without a tray, close can only mean quit.
+            let action = if self.tray.is_none() {
+                CloseAction::Quit
+            } else {
+                self.settings.close_action
+            };
+            match action {
+                CloseAction::Quit => self.quitting = true,
+                CloseAction::Tray => {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                    self.hide_to_tray(ctx, running);
+                }
+                CloseAction::Ask => {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                    self.confirm_close = true;
+                }
+            }
+        }
+    }
+
+    /// "Minimise to tray or quit?", shown when the close button is pressed and
+    /// the user has not already told us which they mean.
+    fn close_dialog(&mut self, ctx: &egui::Context, running: bool) {
+        if !self.confirm_close {
+            return;
+        }
+        let mut choice: Option<CloseAction> = None;
+
+        egui::Window::new("Close keylux?")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                ui.label("keylux can keep running in the notification area, or quit.");
+                ui.add_space(2.0);
+                ui.weak(
+                    "Quitting stops the lighting; the keyboard keeps the last frame it was sent.",
+                );
+                ui.add_space(10.0);
+                ui.checkbox(&mut self.remember_choice, "Remember my choice");
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Minimise to tray").clicked() {
+                        choice = Some(CloseAction::Tray);
+                    }
+                    if ui.button("Quit").clicked() {
+                        choice = Some(CloseAction::Quit);
+                    }
+                    if ui.button("Cancel").clicked() {
+                        self.confirm_close = false;
+                        self.remember_choice = false;
+                    }
+                });
+            });
+
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.confirm_close = false;
+            self.remember_choice = false;
+        }
+
+        let Some(choice) = choice else { return };
+        if self.remember_choice {
+            self.settings.close_action = choice;
+            self.settings.save();
+            self.remember_choice = false;
+        }
+        match choice {
+            CloseAction::Tray => {
+                self.hide_to_tray(ctx, running);
+            }
+            CloseAction::Quit => self.quit(ctx),
+            CloseAction::Ask => {}
+        }
+    }
+
+    /// Window behaviour, tucked at the bottom of the effects panel so a user
+    /// who regrets a "remember my choice" can undo it without editing JSON.
+    fn settings_ui(&mut self, ui: &mut egui::Ui) {
+        ui.collapsing("Window", |ui| {
+            if self.tray.is_none() {
+                ui.weak("No system tray available, so closing quits.");
+                return;
+            }
+            let mut dirty = false;
+            dirty |= ui
+                .checkbox(&mut self.settings.minimize_to_tray, "Minimise to tray")
+                .changed();
+            dirty |= ui
+                .checkbox(
+                    &mut self.settings.run_in_background,
+                    "Keep lighting running when hidden",
+                )
+                .changed();
+
+            ui.horizontal(|ui| {
+                ui.label("Close button");
+                let text = match self.settings.close_action {
+                    CloseAction::Ask => "Ask",
+                    CloseAction::Tray => "Minimise to tray",
+                    CloseAction::Quit => "Quit",
+                };
+                egui::ComboBox::from_id_salt("close_action")
+                    .selected_text(text)
+                    .show_ui(ui, |ui| {
+                        for (v, label) in [
+                            (CloseAction::Ask, "Ask"),
+                            (CloseAction::Tray, "Minimise to tray"),
+                            (CloseAction::Quit, "Quit"),
+                        ] {
+                            dirty |= ui
+                                .selectable_value(&mut self.settings.close_action, v, label)
+                                .changed();
+                        }
+                    });
+            });
+
+            if dirty {
+                self.settings.save();
+            }
+        });
     }
 
     /// Import a GIF, image or folder of frames as an animation.
@@ -118,7 +328,18 @@ fn open_folder(path: &std::path::Path) {
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Snapshot the engine state, then release the lock before drawing.
-        let (frame, layout, fps, status, effects, engine_sel, errors, running, frames_sent) = {
+        let (
+            frame,
+            layout,
+            fps,
+            status,
+            effects,
+            engine_sel,
+            errors,
+            running,
+            frames_sent,
+            script_error,
+        ) = {
             let s = self.engine.shared.lock().unwrap();
             (
                 s.frame.clone(),
@@ -130,8 +351,16 @@ impl eframe::App for App {
                 s.errors.clone(),
                 s.running,
                 s.frames_sent,
+                s.script_error.clone(),
             )
         };
+
+        let status_line = match &status {
+            DeviceStatus::Connected { name, .. } => name.clone(),
+            DeviceStatus::Disconnected(_) => "not connected".to_string(),
+        };
+        self.window_lifecycle(ctx, running, &status_line);
+        self.close_dialog(ctx, running);
 
         // First frame, or the engine changed selection (e.g. after a rescan).
         if self.selected == usize::MAX || self.selected != engine_sel {
@@ -229,15 +458,30 @@ impl eframe::App for App {
                     ui.add_space(4.0);
                     ui.weak(short(n, 120));
                 }
+
+                ui.add_space(8.0);
+                ui.separator();
+                self.settings_ui(ui);
             });
 
-        egui::TopBottomPanel::bottom("errors").show_animated(ctx, !errors.is_empty(), |ui| {
-            ui.horizontal_wrapped(|ui| {
-                ui.colored_label(egui::Color32::from_rgb(230, 160, 60), "⚠");
-                for e in errors.iter().take(4) {
-                    ui.label(egui::RichText::new(short(e, 160)).small());
-                }
-            });
+        let has_errors = !errors.is_empty() || script_error.is_some();
+        egui::TopBottomPanel::bottom("errors").show_animated(ctx, has_errors, |ui| {
+            // A script that throws keeps its last good frame on the board, so
+            // without this strip a broken effect looks like a frozen app.
+            if let Some(e) = &script_error {
+                ui.horizontal_wrapped(|ui| {
+                    ui.colored_label(egui::Color32::from_rgb(230, 110, 90), "✖");
+                    ui.label(egui::RichText::new(short(e, 200)).small());
+                });
+            }
+            if !errors.is_empty() {
+                ui.horizontal_wrapped(|ui| {
+                    ui.colored_label(egui::Color32::from_rgb(230, 160, 60), "⚠");
+                    for e in errors.iter().take(4) {
+                        ui.label(egui::RichText::new(short(e, 160)).small());
+                    }
+                });
+            }
         });
 
         egui::CentralPanel::default().show(ctx, |ui| {
@@ -281,9 +525,41 @@ impl eframe::App for App {
                 return;
             };
 
-            ui.heading(&effect.meta.name);
+            ui.horizontal(|ui| {
+                ui.heading(&effect.meta.name);
+                // Imported artwork and saved timelines are both plain keyframe
+                // JSON, so anything the registry lists as an animation can be
+                // reopened and reworked rather than only replaced.
+                if effect.is_animation {
+                    if let Some(file) = effect.file.clone() {
+                        if ui
+                            .button("✏ Edit")
+                            .on_hover_text("Open this animation in the timeline editor")
+                            .clicked()
+                        {
+                            let path = self.anim_dir.join(&file);
+                            match aula_effects::Animation::load(&path) {
+                                Ok(anim) => {
+                                    let stem = std::path::Path::new(&file)
+                                        .file_stem()
+                                        .map(|s| s.to_string_lossy().into_owned())
+                                        .unwrap_or_else(|| file.clone());
+                                    self.editor = Some(Editor::from_animation(anim, stem));
+                                    self.tab = Tab::Create;
+                                }
+                                Err(e) => self.notice = Some(format!("Could not open: {e}")),
+                            }
+                        }
+                    }
+                }
+            });
             if let Some(f) = &effect.file {
-                ui.weak(format!("script: {f}"));
+                let kind = if effect.is_animation {
+                    "animation"
+                } else {
+                    "script"
+                };
+                ui.weak(format!("{kind}: {f}"));
             }
             ui.add_space(4.0);
 
