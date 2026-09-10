@@ -162,10 +162,16 @@ impl Tray {
     }
 }
 
-/// A 32x32 icon drawn in code, so the repo carries no binary asset and the
-/// icon cannot go missing at runtime: a dark rounded board with a row of lit
-/// keys across it.
 fn app_icon() -> Icon {
+    let (rgba, w, h) = icon_rgba();
+    Icon::from_rgba(rgba, w, h).expect("32x32 RGBA is a valid icon")
+}
+
+/// The app icon as raw RGBA, drawn in code so the repo carries no binary asset
+/// and the icon cannot go missing at runtime: a dark rounded board with rows of
+/// lit keys sweeping through the spectrum. Shared by the tray and the window so
+/// the taskbar shows the same mark as the notification area.
+pub fn icon_rgba() -> (Vec<u8>, u32, u32) {
     const N: usize = 32;
     let mut rgba = vec![0u8; N * N * 4];
 
@@ -205,7 +211,7 @@ fn app_icon() -> Icon {
         }
     }
 
-    Icon::from_rgba(rgba, N as u32, N as u32).expect("32x32 RGBA is a valid icon")
+    (rgba, N as u32, N as u32)
 }
 
 fn hsv_bytes(h: f32) -> [u8; 3] {

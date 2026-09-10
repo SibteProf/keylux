@@ -52,6 +52,10 @@ pub fn run() -> anyhow::Result<()> {
                     "animation: {}",
                     p.file_name().unwrap_or_default().to_string_lossy()
                 ),
+                Source::Composition(p) => format!(
+                    "composition: {}",
+                    p.file_name().unwrap_or_default().to_string_lossy()
+                ),
             };
             println!("  {:<10} {:<28} [{tag}]", e.meta.id, e.meta.name);
             if !e.meta.description.is_empty() {

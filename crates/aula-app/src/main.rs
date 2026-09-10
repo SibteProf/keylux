@@ -3,10 +3,12 @@
 //! Runs the GUI by default. Any argument drops to the CLI, which is handy for
 //! scripting and for hardware checks without a window.
 
+mod board;
 mod cli;
 mod editor;
 mod engine;
 mod settings;
+mod theme;
 mod tray;
 mod ui;
 mod window_ctl;
@@ -36,11 +38,19 @@ fn main() -> anyhow::Result<()> {
     }
 
     let dir = effects_dir();
+    let (rgba, w, h) = tray::icon_rgba();
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_inner_size([880.0, 620.0])
             .with_min_inner_size([640.0, 480.0])
-            .with_title("keylux"),
+            .with_title("keylux")
+            // The taskbar/title-bar icon, same mark as the tray, instead of
+            // eframe's default "e".
+            .with_icon(eframe::egui::IconData {
+                rgba,
+                width: w,
+                height: h,
+            }),
         ..Default::default()
     };
 

@@ -26,6 +26,10 @@ pub enum Cmd {
     SetMaxFps(u32),
     /// Re-scan the effects directory now.
     Rescan,
+    /// Stream this exact frame instead of the selected effect — the timeline
+    /// editor's "send to keyboard" preview. `None` hands control back to the
+    /// effect engine.
+    LivePreview(Option<Frame>),
     /// Drive this device, or `None` for automatic (wired preferred).
     SelectDevice(Option<DeviceId>),
     /// Re-enumerate devices now. `deep` also probes unrecognised hardware and
@@ -76,6 +80,7 @@ pub struct EffectInfo {
     pub meta: EffectMeta,
     pub is_script: bool,
     pub is_animation: bool,
+    pub is_composition: bool,
     pub file: Option<String>,
 }
 
@@ -104,6 +109,10 @@ pub struct Shared {
     /// slower than the wired one, and a slider offering a rate the device will
     /// silently clamp looks like a bug.
     pub max_fps_ceiling: u32,
+    /// Which link the connected device is on, or `None` when disconnected. The
+    /// UI uses this to restrict wireless to solid colours: the radio cannot keep
+    /// up with full-board animation, so animations are blocked over the dongle.
+    pub link: Option<Link>,
 }
 
 impl Shared {
@@ -123,6 +132,7 @@ impl Shared {
             pinned: None,
             scanning: false,
             max_fps_ceiling: p::MAX_FPS,
+            link: None,
         }
     }
 }
@@ -193,6 +203,9 @@ fn run(
     let mut effect_start = Instant::now();
     let mut running = true;
     let mut max_fps = p::MAX_FPS;
+    // When set, the editor is driving the board directly; the effect engine
+    // stands aside until it clears.
+    let mut live_preview: Option<Frame> = None;
 
     let mut fps_window = Instant::now();
     let mut fps_frames = 0u32;
@@ -273,6 +286,7 @@ fn run(
                     params = current_params(&reg, selected);
                     publish_effects(&shared, &reg);
                 }
+                Ok(Cmd::LivePreview(frame)) => live_preview = frame,
                 Err(TryRecvError::Empty) => break,
             }
         }
@@ -326,6 +340,7 @@ fn run(
                                         s.layout = kb.layout().to_vec();
                                         s.frame = Frame::black(kb.led_count());
                                         s.max_fps_ceiling = kb.max_fps();
+                                        s.link = Some(kb.link());
                                         drop(s);
                                         write_failures = 0;
                                         device = Some(kb);
@@ -375,6 +390,34 @@ fn run(
             repaint();
             continue;
         };
+
+        // Live preview from the editor overrides everything, paused or not: the
+        // user is actively painting and expects the board to follow the brush.
+        if let Some(preview) = live_preview.clone() {
+            if kb.stream(&preview).is_ok() {
+                write_failures = 0;
+                let mut s = shared.lock().unwrap();
+                s.frame = preview;
+            }
+            repaint();
+            std::thread::sleep(Duration::from_millis(2));
+            continue;
+        }
+
+        // The radio cannot stream full-board animation smoothly, so wireless is
+        // solid-colours-only for now. The UI blocks picking an animation over
+        // the dongle, but the physical side-switch can flip the link under a
+        // running animation — this is the backstop: fall back to the first
+        // non-animation effect rather than stutter.
+        if kb.link() == Link::Dongle && blocks_wireless(&reg, selected) {
+            if let Some(i) = first_wireless_safe(&reg) {
+                selected = i;
+                params = current_params(&reg, selected);
+                effect_start = Instant::now();
+                let mut s = shared.lock().unwrap();
+                s.selected = selected;
+            }
+        }
 
         // Paused means paused: no rendering and no writes, so the board holds
         // its last frame and the keyboard gets the bus entirely to itself.
@@ -441,6 +484,7 @@ fn run(
                     let mut s = shared.lock().unwrap();
                     s.status = DeviceStatus::Disconnected(e.to_string());
                     s.fps = 0.0;
+                    s.link = None;
                     drop(s);
                     device = None;
                     write_failures = 0;
@@ -504,8 +548,9 @@ fn publish_effects(shared: &Arc<Mutex<Shared>>, reg: &Registry) {
             meta: e.meta.clone(),
             is_script: matches!(e.source, Source::Script(_)),
             is_animation: matches!(e.source, Source::Animation(_)),
+            is_composition: matches!(e.source, Source::Composition(_)),
             file: match &e.source {
-                Source::Script(p) | Source::Animation(p) => Some(
+                Source::Script(p) | Source::Animation(p) | Source::Composition(p) => Some(
                     p.file_name()
                         .unwrap_or_default()
                         .to_string_lossy()
@@ -519,6 +564,23 @@ fn publish_effects(shared: &Arc<Mutex<Shared>>, reg: &Registry) {
     let mut s = shared.lock().unwrap();
     s.effects = effects;
     s.errors = reg.errors.clone();
+}
+
+/// Does the effect at `idx` stream full-board motion the radio can't keep up
+/// with? Keyframe animations and layered compositions both do, so both are
+/// blocked over the wireless link; built-ins and scripts are not.
+fn blocks_wireless(reg: &Registry, idx: usize) -> bool {
+    reg.entries
+        .get(idx)
+        .map(|e| matches!(e.source, Source::Animation(_) | Source::Composition(_)))
+        .unwrap_or(false)
+}
+
+/// The first effect safe to drive over the wireless link, for the fallback.
+fn first_wireless_safe(reg: &Registry) -> Option<usize> {
+    reg.entries
+        .iter()
+        .position(|e| !matches!(e.source, Source::Animation(_) | Source::Composition(_)))
 }
 
 fn current_params(reg: &Registry, idx: usize) -> Params {

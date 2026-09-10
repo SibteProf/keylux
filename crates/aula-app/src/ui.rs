@@ -3,11 +3,13 @@
 use eframe::egui;
 
 use aula_effects::{ParamKind, Params, Value};
-use aula_protocol::Rgb;
+use aula_protocol::{Link, Rgb};
 
+use crate::board;
 use crate::editor::{self, Editor};
 use crate::engine::{Cmd, DeviceStatus, Engine};
 use crate::settings::{CloseAction, Settings};
+use crate::theme;
 use crate::tray::{Tray, TrayAction};
 use crate::window_ctl::WindowRef;
 
@@ -15,6 +17,7 @@ use crate::window_ctl::WindowRef;
 enum Tab {
     Play,
     Create,
+    Settings,
 }
 
 pub struct App {
@@ -29,6 +32,9 @@ pub struct App {
     editor: Option<Editor>,
     last_tick: std::time::Instant,
     notice: Option<String>,
+    /// True while the editor is streaming its preview to the keyboard, so we
+    /// know to hand control back to the effect engine when that stops.
+    live_active: bool,
 
     settings: Settings,
     /// `None` when the tray could not be created. Everything that hides the
@@ -52,6 +58,7 @@ pub struct App {
 
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>, effects_dir: std::path::PathBuf) -> Self {
+        theme::current().apply(&cc.egui_ctx);
         let ctx = cc.egui_ctx.clone();
         let settings = Settings::load();
         let engine = Engine::spawn(
@@ -106,6 +113,7 @@ impl App {
             editor: None,
             last_tick: std::time::Instant::now(),
             notice: None,
+            live_active: false,
 
             settings,
             tray,
@@ -142,6 +150,12 @@ impl App {
         if !self.settings.run_in_background && running {
             self.engine.send(Cmd::SetRunning(false));
             self.resume_on_show = true;
+        }
+        // The editor stops drawing while hidden, so hand the board back to the
+        // effect engine rather than leaving a stale preview frame on it.
+        if self.live_active {
+            self.engine.send(Cmd::LivePreview(None));
+            self.live_active = false;
         }
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
         self.hidden = true;
@@ -268,33 +282,35 @@ impl App {
     /// matches what the vendor driver does, but a busy machine or a marginal
     /// cable can still push it over — hence a lever rather than a fixed number.
     fn device_settings_ui(&mut self, ui: &mut egui::Ui) {
-        ui.collapsing("Keyboard", |ui| {
-            self.device_picker_ui(ui);
-            ui.separator();
+        egui::CollapsingHeader::new("Keyboard")
+            .default_open(true)
+            .show(ui, |ui| {
+                self.device_picker_ui(ui);
+                ui.separator();
 
-            // The ceiling is the connected device's, not the protocol's: the
-            // wireless link is paced more slowly, and offering a rate the
-            // device will silently clamp reads as a bug.
-            let ceiling = self.engine.shared.lock().unwrap().max_fps_ceiling.max(1);
-            let mut fps = self.settings.max_fps.clamp(1, ceiling);
-            let lo = 4.min(ceiling);
-            let resp = ui
-                .add(egui::Slider::new(&mut fps, lo..=ceiling).text("Frame rate"))
-                .on_hover_text(
-                    "Lower this if the keyboard misses keypresses or repeats them.\n\
+                // The ceiling is the connected device's, not the protocol's: the
+                // wireless link is paced more slowly, and offering a rate the
+                // device will silently clamp reads as a bug.
+                let ceiling = self.engine.shared.lock().unwrap().max_fps_ceiling.max(1);
+                let mut fps = self.settings.max_fps.clamp(1, ceiling);
+                let lo = 4.min(ceiling);
+                let resp = ui
+                    .add(egui::Slider::new(&mut fps, lo..=ceiling).text("Frame rate"))
+                    .on_hover_text(
+                        "Lower this if the keyboard misses keypresses or repeats them.\n\
                      Lighting traffic and key scanning share the same processor.",
-                );
-            if resp.changed() {
-                self.settings.max_fps = fps;
-                self.engine.send(Cmd::SetMaxFps(fps));
-            }
-            // Only persist once the drag ends, so a sweep across the slider
-            // does not write the file a hundred times.
-            if resp.drag_stopped() || (resp.changed() && !resp.dragged()) {
-                self.settings.save();
-            }
-            ui.weak("Unchanged frames are not resent, so a still effect uses no bandwidth.");
-        });
+                    );
+                if resp.changed() {
+                    self.settings.max_fps = fps;
+                    self.engine.send(Cmd::SetMaxFps(fps));
+                }
+                // Only persist once the drag ends, so a sweep across the slider
+                // does not write the file a hundred times.
+                if resp.drag_stopped() || (resp.changed() && !resp.dragged()) {
+                    self.settings.save();
+                }
+                ui.weak("Unchanged frames are not resent, so a still effect uses no bandwidth.");
+            });
     }
 
     /// Pick which board to drive, and find receivers that are not built in.
@@ -375,67 +391,73 @@ impl App {
         } = self.engine.shared.lock().unwrap().status
         {
             ui.colored_label(
-                egui::Color32::from_rgb(230, 170, 60),
+                theme::current().warning,
                 "Streaming only — nothing has confirmed this device, so lighting-mode \
                  changes are refused.",
             );
         }
     }
 
-    /// Window behaviour, tucked at the bottom of the effects panel so a user
-    /// who regrets a "remember my choice" can undo it without editing JSON.
+    /// The Settings tab: device/frame-rate controls and window behaviour, so a
+    /// user who regrets a "remember my choice" can undo it without editing JSON.
     fn settings_ui(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Settings");
+        ui.add_space(4.0);
         self.device_settings_ui(ui);
-        ui.collapsing("Window", |ui| {
-            if !self.can_hide() {
-                ui.weak("No system tray on this platform, so closing quits.");
-                return;
-            }
-            let mut dirty = false;
-            dirty |= ui
-                .checkbox(&mut self.settings.minimize_to_tray, "Minimise to tray")
-                .changed();
-            dirty |= ui
-                .checkbox(
-                    &mut self.settings.run_in_background,
-                    "Keep lighting running when hidden",
-                )
-                .changed();
+        egui::CollapsingHeader::new("Window")
+            .default_open(true)
+            .show(ui, |ui| {
+                if !self.can_hide() {
+                    ui.weak("No system tray on this platform, so closing quits.");
+                    return;
+                }
+                let mut dirty = false;
+                dirty |= ui
+                    .checkbox(&mut self.settings.minimize_to_tray, "Minimise to tray")
+                    .changed();
+                dirty |= ui
+                    .checkbox(
+                        &mut self.settings.run_in_background,
+                        "Keep lighting running when hidden",
+                    )
+                    .changed();
 
-            ui.horizontal(|ui| {
-                ui.label("Close button");
-                let text = match self.settings.close_action {
-                    CloseAction::Ask => "Ask",
-                    CloseAction::Tray => "Minimise to tray",
-                    CloseAction::Quit => "Quit",
-                };
-                egui::ComboBox::from_id_salt("close_action")
-                    .selected_text(text)
-                    .show_ui(ui, |ui| {
-                        for (v, label) in [
-                            (CloseAction::Ask, "Ask"),
-                            (CloseAction::Tray, "Minimise to tray"),
-                            (CloseAction::Quit, "Quit"),
-                        ] {
-                            dirty |= ui
-                                .selectable_value(&mut self.settings.close_action, v, label)
-                                .changed();
-                        }
-                    });
+                ui.horizontal(|ui| {
+                    ui.label("Close button");
+                    let text = match self.settings.close_action {
+                        CloseAction::Ask => "Ask",
+                        CloseAction::Tray => "Minimise to tray",
+                        CloseAction::Quit => "Quit",
+                    };
+                    egui::ComboBox::from_id_salt("close_action")
+                        .selected_text(text)
+                        .show_ui(ui, |ui| {
+                            for (v, label) in [
+                                (CloseAction::Ask, "Ask"),
+                                (CloseAction::Tray, "Minimise to tray"),
+                                (CloseAction::Quit, "Quit"),
+                            ] {
+                                dirty |= ui
+                                    .selectable_value(&mut self.settings.close_action, v, label)
+                                    .changed();
+                            }
+                        });
+                });
+
+                if dirty {
+                    self.settings.save();
+                }
             });
-
-            if dirty {
-                self.settings.save();
-            }
-        });
     }
 
     /// Import a GIF, image or folder of frames as an animation.
     fn import_dialog(&mut self, layout: &[aula_protocol::KeyPos], leds: usize) -> Option<String> {
         let file = rfd::FileDialog::new()
             .add_filter(
-                "Animations & art",
-                &["gif", "png", "jpg", "jpeg", "bmp", "webp", "json", "rhai"],
+                "Effects & art",
+                &[
+                    "gif", "png", "jpg", "jpeg", "bmp", "webp", "json", "klx", "rhai",
+                ],
             )
             .set_title("Import an effect, animation or image")
             .pick_file()?;
@@ -445,8 +467,8 @@ impl App {
             .map(|e| e.to_string_lossy().to_ascii_lowercase())
             .unwrap_or_default();
 
-        // Scripts and existing animations are just copied into place.
-        if ext == "rhai" || ext == "json" {
+        // Scripts, animations and compositions are just copied into place.
+        if ext == "rhai" || ext == "json" || ext == "klx" {
             let dest_dir = if ext == "rhai" {
                 &self.effects_dir
             } else {
@@ -508,6 +530,7 @@ impl eframe::App for App {
             running,
             frames_sent,
             script_error,
+            link,
         ) = {
             let s = self.engine.shared.lock().unwrap();
             (
@@ -521,8 +544,10 @@ impl eframe::App for App {
                 s.running,
                 s.frames_sent,
                 s.script_error.clone(),
+                s.link,
             )
         };
+        let wireless = link == Some(Link::Dongle);
 
         let status_line = match &status {
             DeviceStatus::Connected { name, .. } => name.clone(),
@@ -540,12 +565,16 @@ impl eframe::App for App {
             }
         }
 
+        let pal = theme::current();
         egui::TopBottomPanel::top("status").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 match &status {
                     DeviceStatus::Connected { name, .. } => {
-                        ui.colored_label(egui::Color32::from_rgb(80, 200, 120), "●");
+                        status_dot(ui, pal.success);
                         ui.label(egui::RichText::new(name).strong());
+                        if let Some(l) = link {
+                            ui.weak(format!("({})", l.suffix()));
+                        }
                         ui.label(format!("{fps:.0} FPS"));
                         ui.weak(format!("{frames_sent} frames"));
                     }
@@ -553,7 +582,7 @@ impl eframe::App for App {
                     // told. The one-click way out matters more than the
                     // message, so it sits right next to it.
                     DeviceStatus::Waiting { label, .. } => {
-                        ui.colored_label(egui::Color32::from_rgb(230, 170, 60), "●");
+                        status_dot(ui, pal.warning);
                         ui.label(format!("Waiting for {label}"));
                         if ui
                             .small_button("Use another device")
@@ -568,7 +597,7 @@ impl eframe::App for App {
                         }
                     }
                     DeviceStatus::Disconnected(why) => {
-                        ui.colored_label(egui::Color32::from_rgb(220, 90, 90), "●");
+                        status_dot(ui, pal.danger);
                         ui.label("Not connected");
                         ui.weak(short(why, 90));
                     }
@@ -600,28 +629,80 @@ impl eframe::App for App {
                 });
                 ui.separator();
 
+                if wireless {
+                    ui.colored_label(
+                        pal.warning,
+                        "Wireless: solid colours only for now — animations are greyed out. \
+                         Use the cable for animation.",
+                    );
+                    ui.add_space(2.0);
+                }
+
                 egui::ScrollArea::vertical().show(ui, |ui| {
-                    for (i, e) in effects.iter().enumerate() {
-                        let label = match (e.is_script, e.is_animation) {
-                            (_, true) => format!("🎞 {}", e.meta.name),
-                            (true, _) => format!("📜 {}", e.meta.name),
-                            _ => format!("⚙ {}", e.meta.name),
-                        };
-                        let resp = ui.selectable_label(i == self.selected, label);
-                        if !e.meta.description.is_empty() {
-                            resp.clone().on_hover_text(&e.meta.description);
+                    // Group the list so a long folder of scripts and animations
+                    // stays scannable: built-ins (0), then scripts (1), then
+                    // animations (2).
+                    let group_of = |e: &crate::engine::EffectInfo| -> usize {
+                        if e.is_composition {
+                            3
+                        } else if e.is_animation {
+                            2
+                        } else if e.is_script {
+                            1
+                        } else {
+                            0
                         }
-                        if resp.clicked() && i != self.selected {
-                            self.selected = i;
-                            self.params = Params::from_specs(&e.meta.params);
-                            self.engine.send(Cmd::SelectEffect(i));
-                            self.engine.send(Cmd::SetParams(self.params.clone()));
+                    };
+                    for (g, heading) in ["Built-in", "Scripts", "Animations", "Compositions"]
+                        .iter()
+                        .enumerate()
+                    {
+                        if !effects.iter().any(|e| group_of(e) == g) {
+                            continue;
+                        }
+                        ui.add_space(4.0);
+                        ui.label(egui::RichText::new(*heading).small().color(pal.text_muted));
+                        for (i, e) in effects.iter().enumerate() {
+                            if group_of(e) != g {
+                                continue;
+                            }
+                            let icon = if e.is_composition {
+                                "🗂"
+                            } else if e.is_animation {
+                                "🎞"
+                            } else if e.is_script {
+                                "📜"
+                            } else {
+                                "⚙"
+                            };
+                            let label = format!("{icon} {}", e.meta.name);
+                            // Animations and compositions can't stream smoothly
+                            // over the radio, so they are disabled (not hidden)
+                            // while on the dongle.
+                            let blocked = wireless && (e.is_animation || e.is_composition);
+                            let resp = ui.add_enabled(
+                                !blocked,
+                                egui::SelectableLabel::new(i == self.selected, label),
+                            );
+                            let resp = if blocked {
+                                resp.on_hover_text("Available over the cable — the 2.4 GHz link can't stream animation smoothly yet.")
+                            } else if !e.meta.description.is_empty() {
+                                resp.on_hover_text(&e.meta.description)
+                            } else {
+                                resp
+                            };
+                            if resp.clicked() && i != self.selected {
+                                self.selected = i;
+                                self.params = Params::from_specs(&e.meta.params);
+                                self.engine.send(Cmd::SelectEffect(i));
+                                self.engine.send(Cmd::SetParams(self.params.clone()));
+                            }
                         }
                     }
                 });
 
                 ui.separator();
-                ui.weak("⚙ built-in   📜 script   🎞 animation");
+                ui.weak("⚙ built-in   📜 script   🎞 animation   🗂 composition");
 
                 ui.add_space(6.0);
                 if ui
@@ -646,10 +727,6 @@ impl eframe::App for App {
                     ui.add_space(4.0);
                     ui.weak(short(n, 120));
                 }
-
-                ui.add_space(8.0);
-                ui.separator();
-                self.settings_ui(ui);
             });
 
         let has_errors = !errors.is_empty() || script_error.is_some();
@@ -658,13 +735,13 @@ impl eframe::App for App {
             // without this strip a broken effect looks like a frozen app.
             if let Some(e) = &script_error {
                 ui.horizontal_wrapped(|ui| {
-                    ui.colored_label(egui::Color32::from_rgb(230, 110, 90), "✖");
+                    ui.colored_label(pal.danger, "✖");
                     ui.label(egui::RichText::new(short(e, 200)).small());
                 });
             }
             if !errors.is_empty() {
                 ui.horizontal_wrapped(|ui| {
-                    ui.colored_label(egui::Color32::from_rgb(230, 160, 60), "⚠");
+                    ui.colored_label(pal.warning, "⚠");
                     for e in errors.iter().take(4) {
                         ui.label(egui::RichText::new(short(e, 160)).small());
                     }
@@ -684,8 +761,25 @@ impl eframe::App for App {
                         self.editor = Some(Editor::new(frame.len().max(1)));
                     }
                 }
+                ui.selectable_value(&mut self.tab, Tab::Settings, "⚙ Settings");
             });
             ui.separator();
+
+            // Leaving the editor (or closing its live toggle) hands the board
+            // back to the effect engine.
+            let editor_live =
+                self.tab == Tab::Create && self.editor.as_ref().map(|e| e.live).unwrap_or(false);
+            if !editor_live && self.live_active {
+                self.engine.send(Cmd::LivePreview(None));
+                self.live_active = false;
+            }
+
+            if self.tab == Tab::Settings {
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    self.settings_ui(ui);
+                });
+                return;
+            }
 
             if self.tab == Tab::Create {
                 let dt = self.last_tick.elapsed().as_secs_f32();
@@ -694,6 +788,13 @@ impl eframe::App for App {
                 if let Some(ed) = self.editor.as_mut() {
                     ed.tick(dt);
                     editor::show(ui, ed, &layout, &anim_dir);
+                    // Stream the editor's preview to the board while the toggle
+                    // is on, so the keyboard follows the brush.
+                    if ed.live {
+                        let f = ed.preview_frame(ed.comp.leds, &layout);
+                        self.engine.send(Cmd::LivePreview(Some(f)));
+                        self.live_active = true;
+                    }
                 }
                 return;
             }
@@ -702,7 +803,7 @@ impl eframe::App for App {
             // ---- live preview ----
             let desired = egui::vec2(ui.available_width(), 190.0);
             let (rect, _) = ui.allocate_exact_size(desired, egui::Sense::hover());
-            draw_keyboard(ui, rect, &layout, &frame);
+            board::draw_board(ui, rect, &layout, &frame);
 
             ui.add_space(8.0);
             ui.separator();
@@ -715,24 +816,31 @@ impl eframe::App for App {
 
             ui.horizontal(|ui| {
                 ui.heading(&effect.meta.name);
-                // Imported artwork and saved timelines are both plain keyframe
-                // JSON, so anything the registry lists as an animation can be
-                // reopened and reworked rather than only replaced.
-                if effect.is_animation {
+                // Compositions and keyframe animations both open in the editor:
+                // a legacy animation is wrapped as a single keyframe layer, so
+                // anything made here can be reworked rather than only replaced.
+                if effect.is_composition || effect.is_animation {
                     if let Some(file) = effect.file.clone() {
                         if ui
                             .button("✏ Edit")
-                            .on_hover_text("Open this animation in the timeline editor")
+                            .on_hover_text("Open in the composition editor")
                             .clicked()
                         {
                             let path = self.anim_dir.join(&file);
-                            match aula_effects::Animation::load(&path) {
-                                Ok(anim) => {
-                                    let stem = std::path::Path::new(&file)
-                                        .file_stem()
-                                        .map(|s| s.to_string_lossy().into_owned())
-                                        .unwrap_or_else(|| file.clone());
-                                    self.editor = Some(Editor::from_animation(anim, stem));
+                            let stem = std::path::Path::new(&file)
+                                .file_stem()
+                                .map(|s| s.to_string_lossy().into_owned())
+                                .unwrap_or_else(|| file.clone());
+                            let opened = if effect.is_composition {
+                                aula_effects::Composition::load(&path)
+                                    .map(|c| Editor::from_composition(c, stem.clone()))
+                            } else {
+                                aula_effects::Animation::load(&path)
+                                    .map(|a| Editor::from_animation(a, stem.clone()))
+                            };
+                            match opened {
+                                Ok(ed) => {
+                                    self.editor = Some(ed);
                                     self.tab = Tab::Create;
                                 }
                                 Err(e) => self.notice = Some(format!("Could not open: {e}")),
@@ -742,7 +850,9 @@ impl eframe::App for App {
                 }
             });
             if let Some(f) = &effect.file {
-                let kind = if effect.is_animation {
+                let kind = if effect.is_composition {
+                    "composition"
+                } else if effect.is_animation {
                     "animation"
                 } else {
                     "script"
@@ -828,53 +938,11 @@ impl eframe::App for App {
     }
 }
 
-/// Draw the board from real layout geometry: rounded rects at each key's
-/// physical position, filled with that key's colour in the current frame.
-///
-/// This doubles as an LED-map check — a wrong map shows up immediately as an
-/// effect that looks scrambled here but fine on the keyboard, or vice versa.
-fn draw_keyboard(
-    ui: &egui::Ui,
-    rect: egui::Rect,
-    layout: &[aula_protocol::KeyPos],
-    frame: &aula_protocol::Frame,
-) {
-    let painter = ui.painter_at(rect);
-    painter.rect_filled(rect, 6.0, egui::Color32::from_gray(18));
-
-    if layout.is_empty() {
-        return;
-    }
-
-    let cols = layout.iter().map(|k| k.x + k.w / 2.0).fold(0.0, f32::max);
-    let rows = layout.iter().map(|k| k.row).max().unwrap_or(0) as f32 + 1.0;
-
-    let pad = 10.0;
-    let unit = ((rect.width() - pad * 2.0) / cols).min((rect.height() - pad * 2.0) / rows);
-    let origin = egui::pos2(
-        rect.left() + pad + ((rect.width() - pad * 2.0) - unit * cols) / 2.0,
-        rect.top() + pad + ((rect.height() - pad * 2.0) - unit * rows) / 2.0,
-    );
-
-    for k in layout {
-        let c = frame.get(k.led);
-        let w = unit * k.w - 2.0;
-        let h = unit - 2.0;
-        let pos = egui::pos2(
-            origin.x + (k.x - k.w / 2.0) * unit + 1.0,
-            origin.y + f32::from(k.row) * unit + 1.0,
-        );
-        let key_rect = egui::Rect::from_min_size(pos, egui::vec2(w.max(1.0), h.max(1.0)));
-
-        // Unlit keys stay visible as dark outlines so the board reads as a
-        // keyboard even when an effect is mostly black.
-        let fill = if c.is_black() {
-            egui::Color32::from_gray(34)
-        } else {
-            egui::Color32::from_rgb(c.r, c.g, c.b)
-        };
-        painter.rect_filled(key_rect, 2.0, fill);
-    }
+/// A filled status dot, drawn rather than typed: the `●` glyph is not in the
+/// bundled font and renders as a tofu box.
+fn status_dot(ui: &mut egui::Ui, color: egui::Color32) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
+    ui.painter().circle_filled(rect.center(), 4.0, color);
 }
 
 fn short(s: &str, max: usize) -> String {
