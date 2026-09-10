@@ -3,6 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::animation::AnimationEffect;
+use crate::composition::CompositeEffect;
 use crate::{builtin, Effect, EffectMeta, ScriptEffect, ScriptError};
 
 /// Where an effect came from, for the UI to label it.
@@ -12,6 +13,8 @@ pub enum Source {
     Script(PathBuf),
     /// A keyframe animation: imported artwork, or made in the timeline editor.
     Animation(PathBuf),
+    /// A layered composition (`.klx`) built in the editor.
+    Composition(PathBuf),
 }
 
 pub struct Entry {
@@ -66,7 +69,24 @@ impl Registry {
         r.anim_dir = Some(anim_dir.as_ref().to_path_buf());
         r.load_scripts();
         r.load_animations();
+        r.load_compositions();
         r
+    }
+
+    fn load_compositions(&mut self) {
+        let Some(dir) = self.anim_dir.clone() else {
+            return;
+        };
+        for path in list_ext(Some(&dir), "klx") {
+            match CompositeEffect::load(&path) {
+                Ok(fx) => self.entries.push(Entry {
+                    meta: fx.meta(),
+                    source: Source::Composition(path),
+                    effect: Box::new(fx),
+                }),
+                Err(e) => self.errors.push(format!("{}: {e}", name_of(&path))),
+            }
+        }
     }
 
     fn load_animations(&mut self) {
@@ -151,7 +171,7 @@ impl Registry {
             .iter()
             .filter_map(|e| match &e.source {
                 Source::Script(p) => Some(p.clone()),
-                Source::Builtin | Source::Animation(_) => None,
+                Source::Builtin | Source::Animation(_) | Source::Composition(_) => None,
             })
             .collect();
 
@@ -163,14 +183,16 @@ impl Registry {
                 .any(|e| matches!(&e.source, Source::Script(_)) && self.is_stale(e));
 
         let anims_changed = self.anim_paths() != self.loaded_anim_paths();
+        let comps_changed = self.comp_paths() != self.loaded_comp_paths();
 
-        if changed || anims_changed {
+        if changed || anims_changed || comps_changed {
             self.entries.retain(|e| e.source == Source::Builtin);
             self.errors.clear();
             self.load_scripts();
             self.load_animations();
+            self.load_compositions();
         }
-        changed || anims_changed
+        changed || anims_changed || comps_changed
     }
 
     fn is_stale(&self, _e: &Entry) -> bool {
@@ -181,6 +203,23 @@ impl Registry {
 
     fn anim_paths(&self) -> Vec<PathBuf> {
         list_ext(self.anim_dir.as_deref(), "json")
+    }
+
+    fn comp_paths(&self) -> Vec<PathBuf> {
+        list_ext(self.anim_dir.as_deref(), "klx")
+    }
+
+    fn loaded_comp_paths(&self) -> Vec<PathBuf> {
+        let mut v: Vec<PathBuf> = self
+            .entries
+            .iter()
+            .filter_map(|e| match &e.source {
+                Source::Composition(p) => Some(p.clone()),
+                _ => None,
+            })
+            .collect();
+        v.sort();
+        v
     }
 
     fn loaded_anim_paths(&self) -> Vec<PathBuf> {
@@ -275,6 +314,23 @@ mod tests {
             assert!(r.find(id).is_some(), "{id} should be discovered");
         }
         assert!(r.len() > 3);
+    }
+
+    #[test]
+    fn compositions_are_discovered() {
+        let anim = std::env::temp_dir().join("aula-registry-comp");
+        let _ = std::fs::remove_dir_all(&anim);
+        std::fs::create_dir_all(&anim).unwrap();
+        crate::composition::Composition::new("My Stack", 4)
+            .save(anim.join("my-stack.klx"))
+            .unwrap();
+
+        let r = Registry::with_all("../../effects", &anim);
+        assert!(r.errors.is_empty(), "load errors: {:?}", r.errors);
+        let i = r
+            .find("my-stack")
+            .expect("composition should be discovered");
+        assert!(matches!(r.entries[i].source, Source::Composition(_)));
     }
 
     #[test]

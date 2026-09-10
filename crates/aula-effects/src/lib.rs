@@ -10,12 +10,15 @@
 
 pub mod animation;
 pub mod builtin;
+pub mod composition;
+pub mod generators;
 pub mod import;
 pub mod params;
 pub mod registry;
 pub mod script;
 
-pub use animation::{Animation, AnimationEffect, Keyframe};
+pub use animation::{Animation, AnimationEffect, Ease, Keyframe};
+pub use composition::{Blend, CompositeEffect, Composition, Layer, LayerContent};
 pub use params::{ParamKind, ParamSpec, Params, Value};
 pub use registry::Registry;
 pub use script::{ScriptEffect, ScriptError};

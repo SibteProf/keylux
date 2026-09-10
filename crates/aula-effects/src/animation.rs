@@ -39,6 +39,63 @@ impl HexColor {
     }
 }
 
+/// How the transition *out of* a keyframe is shaped over time.
+///
+/// The ease is applied to the interpolation fraction between this keyframe and
+/// the next, so each keyframe owns the curve of the segment that begins at it.
+/// [`Ease::Hold`] makes just that one segment a hard cut — something the global
+/// [`Animation::interpolate`] switch cannot express, since it is all-or-nothing.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Ease {
+    #[default]
+    Linear,
+    EaseIn,
+    EaseOut,
+    EaseInOut,
+    /// Hold this keyframe until the next, then cut. A per-keyframe hard cut.
+    Hold,
+}
+
+impl Ease {
+    /// Map a linear 0.0..=1.0 fraction through the easing curve.
+    pub fn apply(self, f: f32) -> f32 {
+        let f = f.clamp(0.0, 1.0);
+        match self {
+            Ease::Linear => f,
+            Ease::EaseIn => f * f,
+            Ease::EaseOut => f * (2.0 - f),
+            Ease::EaseInOut => {
+                if f < 0.5 {
+                    2.0 * f * f
+                } else {
+                    -1.0 + (4.0 - 2.0 * f) * f
+                }
+            }
+            Ease::Hold => 0.0,
+        }
+    }
+
+    /// Short label for the editor's dropdown.
+    pub fn label(self) -> &'static str {
+        match self {
+            Ease::Linear => "Linear",
+            Ease::EaseIn => "Ease in",
+            Ease::EaseOut => "Ease out",
+            Ease::EaseInOut => "Ease in-out",
+            Ease::Hold => "Hold (cut)",
+        }
+    }
+
+    pub const ALL: [Ease; 5] = [
+        Ease::Linear,
+        Ease::EaseIn,
+        Ease::EaseOut,
+        Ease::EaseInOut,
+        Ease::Hold,
+    ];
+}
+
 /// One moment in an animation.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Keyframe {
@@ -46,6 +103,10 @@ pub struct Keyframe {
     pub t: f32,
     /// One colour per LED index.
     pub colors: Vec<HexColor>,
+    /// Easing for the transition out of this keyframe. Defaults to linear so
+    /// animations authored before easing existed load unchanged.
+    #[serde(default)]
+    pub ease: Ease,
 }
 
 impl Keyframe {
@@ -53,6 +114,7 @@ impl Keyframe {
         Self {
             t,
             colors: vec![HexColor::from(Rgb::BLACK); leds],
+            ease: Ease::default(),
         }
     }
 
@@ -60,6 +122,7 @@ impl Keyframe {
         Self {
             t,
             colors: frame.iter().map(|c| HexColor::from(*c)).collect(),
+            ease: Ease::default(),
         }
     }
 
@@ -179,7 +242,9 @@ impl Animation {
             return;
         }
 
-        let f = ((t - a.t) / span).clamp(0.0, 1.0);
+        // The segment's curve is owned by the keyframe it starts from. `Hold`
+        // collapses to 0, holding `a` until the cut at `b`.
+        let f = a.ease.apply(((t - a.t) / span).clamp(0.0, 1.0));
         for led in 0..self.leds {
             out.set(led, lerp_rgb(a.color(led), b.color(led), f));
         }
@@ -290,10 +355,12 @@ mod tests {
             Keyframe {
                 t: 0.0,
                 colors: vec![HexColor::from(Rgb::new(0, 0, 0)); leds],
+                ease: Ease::Linear,
             },
             Keyframe {
                 t: 1.0,
                 colors: vec![HexColor::from(Rgb::new(255, 0, 0)); leds],
+                ease: Ease::Linear,
             },
         ];
         a
@@ -372,6 +439,49 @@ mod tests {
         a.normalise();
         assert!(a.keyframes[0].t < a.keyframes[1].t, "keyframes get sorted");
         assert!(a.duration >= 3.0, "duration covers the last keyframe");
+    }
+
+    #[test]
+    fn ease_curves_map_endpoints_and_bend_the_middle() {
+        for e in Ease::ALL {
+            assert_eq!(e.apply(0.0), 0.0, "{e:?} starts at 0");
+            if e != Ease::Hold {
+                assert!((e.apply(1.0) - 1.0).abs() < 1e-6, "{e:?} ends at 1");
+            }
+        }
+        // ease-in is slower than linear at the midpoint, ease-out faster.
+        assert!(Ease::EaseIn.apply(0.5) < 0.5);
+        assert!(Ease::EaseOut.apply(0.5) > 0.5);
+        // hold stays at the source keyframe for the whole segment.
+        assert_eq!(Ease::Hold.apply(0.9), 0.0);
+    }
+
+    #[test]
+    fn per_keyframe_hold_cuts_while_neighbours_blend() {
+        let mut a = two_frame(1);
+        a.keyframes[0].ease = Ease::Hold;
+        let mut f = Frame::black(1);
+        // With Hold on the first keyframe, halfway still shows the source colour
+        // even though the global interpolate switch is on.
+        a.sample(0.5, &mut f);
+        assert_eq!(f.get(0), Rgb::new(0, 0, 0), "held until the cut");
+    }
+
+    #[test]
+    fn loads_json_without_an_ease_field() {
+        // A file written before easing existed has no `ease` key; it must load
+        // and default to linear rather than failing to parse.
+        let json = r##"{
+            "name": "legacy",
+            "leds": 2,
+            "duration": 1.0,
+            "keyframes": [
+                { "t": 0.0, "colors": ["#000000", "#000000"] },
+                { "t": 1.0, "colors": ["#ffffff", "#ffffff"] }
+            ]
+        }"##;
+        let a: Animation = serde_json::from_str(json).unwrap();
+        assert_eq!(a.keyframes[0].ease, Ease::Linear);
     }
 
     #[test]

@@ -76,7 +76,11 @@ pub fn image_to_keyframe(
         }
     }
 
-    Keyframe { t, colors }
+    Keyframe {
+        t,
+        colors,
+        ease: Default::default(),
+    }
 }
 
 /// Import a still image as a one-frame animation.
