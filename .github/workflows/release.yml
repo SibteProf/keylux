@@ -27,9 +27,12 @@ jobs:
           $stage = "keylux-windows-x64"
           New-Item -ItemType Directory -Force $stage | Out-Null
           Copy-Item target/release/keylux.exe $stage/
-          # The app loads effects and animations from folders next to the exe.
+          # The app loads effects from a folder next to the exe. The animations
+          # folder is runtime content (gitignored), so ship an empty one with a
+          # placeholder; the app also creates it on first run.
           Copy-Item -Recurse effects $stage/effects
-          Copy-Item -Recurse animations $stage/animations
+          New-Item -ItemType Directory -Force $stage/animations | Out-Null
+          Set-Content $stage/animations/.gitkeep ""
           Copy-Item README.md, LICENSE-MIT, LICENSE-APACHE $stage/
           Compress-Archive -Path "$stage/*" -DestinationPath keylux-windows-x64.zip -Force
 
