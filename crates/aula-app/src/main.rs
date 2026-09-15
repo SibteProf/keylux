@@ -53,7 +53,7 @@ fn main() -> anyhow::Result<()> {
             }),
         ..Default::default()
     };
-
+    gtk::init().expect("Failed to initialize GTK");
     eframe::run_native(
         "keylux",
         options,
