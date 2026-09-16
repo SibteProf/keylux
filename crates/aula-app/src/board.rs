@@ -86,7 +86,7 @@ pub fn draw_board(ui: &egui::Ui, rect: egui::Rect, layout: &[KeyPos], frame: &Fr
             pal.text_muted // Set dimmed text on disabled LEDs
         } else { // Else get LED luminance (from Rec.709 TV standard formula) and compare with contrast threshold (150)
             let lum = 0.2126 * c.r as f32 + 0.7152 * c.g as f32 + c.b as f32;
-            if lum > 150.0 {
+            if lum > 160.0 {
                 egui::Color32::BLACK
             } else {
                 egui::Color32::WHITE
