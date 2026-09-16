@@ -81,6 +81,26 @@ pub fn draw_board(ui: &egui::Ui, rect: egui::Rect, layout: &[KeyPos], frame: &Fr
         };
         painter.rect_filled(key_rect, 2.0, fill);
         painter.rect_stroke(key_rect, 2.0, egui::Stroke::new(0.5_f32, pal.key_stroke));
+
+        let key_text_color = if c.is_black() {
+            pal.text_muted // Set dimmed text on disabled LEDs
+        } else { // Else get LED luminance (from Rec.709 TV standard formula) and compare with contrast threshold (150)
+            let lum = 0.2126 * c.r as f32 + 0.7152 * c.g as f32 + c.b as f32;
+            if lum > 150.0 {
+                egui::Color32::BLACK
+            } else {
+                egui::Color32::WHITE
+            }
+        };
+
+        painter.text(
+            key_rect.center(),
+            egui::Align2::CENTER_CENTER,
+            k.name,
+            egui::FontId::proportional(10.0),
+            key_text_color
+        );
+
         boxes.push((key_rect, k.led));
     }
 
