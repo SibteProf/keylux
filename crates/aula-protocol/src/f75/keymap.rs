@@ -16,25 +16,28 @@ use crate::device::KeyPos;
 /// LED index -> key name, straight from the firmware's matrix table.
 #[rustfmt::skip]
 pub const LED_ORDER: [Option<&str>; 90] = [
-    Some("Esc"), Some("`"), Some("Tab"), Some("Caps"), Some("LShift"), Some("LCtrl"), None, Some("1"),
-    Some("Q"), Some("A"), Some("Z"), Some("LWin"), Some("F1"), Some("2"), Some("W"), Some("S"),
-    Some("X"), Some("LAlt"), Some("F2"), Some("3"), Some("E"), Some("D"), Some("C"), None,
-    Some("F3"), Some("4"), Some("R"), Some("F"), Some("V"), None, Some("F4"), Some("5"),
-    Some("T"), Some("G"), Some("B"), Some("Space"), Some("F5"), Some("6"), Some("Y"), Some("H"),
-    Some("N"), None, Some("F6"), Some("7"), Some("U"), Some("J"), Some("M"), None,
-    Some("F7"), Some("8"), Some("I"), Some("K"), Some(","), Some("Fn"), Some("F8"), Some("9"),
-    Some("O"), Some("L"), Some("."), Some("RCtrl"), Some("F9"), Some("0"), Some("P"), Some(";"),
-    Some("/"), None, Some("F10"), Some("-"), Some("["), Some("'"), Some("RShift"), None,
-    Some("F11"), Some("="), Some("]"), None, None, Some("Left"), Some("F12"), Some("Backspace"),
-    Some("\\"), Some("Enter"), Some("Up"), Some("Down"), None, Some("Del"), Some("PgUp"), Some("PgDn"),
-    Some("End"), Some("Right"),
+    Some("Esc"), Some("`"), Some("Tab"), Some("Caps"), Some("LShift"), Some("LCtrl"), None, 
+    Some("1"), Some("Q"), Some("A"), Some("Z"), Some("LWin"), 
+    Some("F1"), Some("2"), Some("W"), Some("S"), Some("X"), Some("LAlt"), 
+    Some("F2"), Some("3"), Some("E"), Some("D"), Some("C"), None,
+    Some("F3"), Some("4"), Some("R"), Some("F"), Some("V"), None, 
+    Some("F4"), Some("5"), Some("T"), Some("G"), Some("B"), Some("Space"), 
+    Some("F5"), Some("6"), Some("Y"), Some("H"), Some("N"), None, 
+    Some("F6"), Some("7"), Some("U"), Some("J"), Some("M"), None,
+    Some("F7"), Some("8"), Some("I"), Some("K"), Some(","), Some("Fn"), 
+    Some("F8"), Some("9"), Some("O"), Some("L"), Some("."), Some("RCtrl"), 
+    Some("F9"), Some("0"), Some("P"), Some(";"), Some("/"), None, 
+    Some("F10"), Some("-"), Some("["), Some("'"), Some("RShift"), None,
+    Some("F11"), Some("="), Some("]"), None, None, Some("Left"), 
+    Some("F12"), Some("Backspace"), Some("\\"), Some("Enter"), Some("Up"), Some("Down"), None, 
+    Some("Del"), Some("PgUp"), Some("PgDn"), Some("End"), Some("Right"),
 ];
 
 /// Physical rows: (key name, width in 1u units), left to right.
 #[rustfmt::skip]
 const ROWS: &[&[(&str, f32)]] = &[
-    &[("Esc", 1.0), ("", 0.9), ("F1", 1.0), ("F2", 1.0), ("F3", 1.0), ("F4", 1.0), ("", 0.4), ("F5", 1.0), ("F6", 1.0),
-      ("F7", 1.0), ("F8", 1.0), ("", 0.4), ("F9", 1.0), ("F10", 1.0), ("F11", 1.0), ("F12", 1.0),
+    &[("Esc", 1.0), ("", 0.9), ("F1", 1.0), ("F2", 1.0), ("F3", 1.0), ("F4", 1.0), ("", 0.4), ("F5", 1.0), 
+      ("F6", 1.0), ("F7", 1.0), ("F8", 1.0), ("", 0.4), ("F9", 1.0), ("F10", 1.0), ("F11", 1.0), ("F12", 1.0),
       ("Knob", 1.0)],
     &[("`", 1.0), ("1", 1.0), ("2", 1.0), ("3", 1.0), ("4", 1.0), ("5", 1.0), ("6", 1.0), ("7", 1.0),
       ("8", 1.0), ("9", 1.0), ("0", 1.0), ("-", 1.0), ("=", 1.0), ("Backspace", 2.0), ("Del", 1.0)],
