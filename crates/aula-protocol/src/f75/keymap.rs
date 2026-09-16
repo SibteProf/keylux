@@ -26,7 +26,7 @@ pub const LED_ORDER: [Option<&str>; 90] = [
     Some("O"), Some("L"), Some("."), Some("RCtrl"), Some("F9"), Some("0"), Some("P"), Some(";"),
     Some("/"), None, Some("F10"), Some("-"), Some("["), Some("'"), Some("RShift"), None,
     Some("F11"), Some("="), Some("]"), None, None, Some("Left"), Some("F12"), Some("Backspace"),
-    Some("\\"), Some("Enter"), Some("Up"), Some("Down"), Some("Knob"), Some("Del"), Some("PgUp"), Some("PgDn"),
+    Some("\\"), Some("Enter"), Some("Up"), Some("Down"), None, Some("Del"), Some("PgUp"), Some("PgDn"),
     Some("End"), Some("Right"),
 ];
 
