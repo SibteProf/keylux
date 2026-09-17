@@ -788,6 +788,11 @@ impl eframe::App for App {
                 if let Some(ed) = self.editor.as_mut() {
                     ed.tick(dt);
                     editor::show(ui, ed, &layout, &anim_dir);
+                    if ed.frame_requested {
+                        ed.frame_requested = false;
+                        let f = ed.preview_frame(ed.comp.leds, &layout);
+                        self.engine.send(Cmd::WriteToNVRAM(Some(f)));
+                    }
                     // Stream the editor's preview to the board while the toggle
                     // is on, so the keyboard follows the brush.
                     if ed.live {
