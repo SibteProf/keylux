@@ -38,6 +38,7 @@ pub enum Cmd {
         deep: bool,
     },
     Shutdown,
+    WriteToNVRAM(Option<Frame>),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -287,6 +288,16 @@ fn run(
                     publish_effects(&shared, &reg);
                 }
                 Ok(Cmd::LivePreview(frame)) => live_preview = frame,
+                Ok(Cmd::WriteToNVRAM(frame)) => {
+                    let frame = frame.unwrap_or_else(|| shared.lock().unwrap().frame.clone());
+                    if let Some(kb) = device.as_mut() {
+                        if let Err(e) = kb.set_static(&frame) {
+                            eprintln!("Write to NVRAM failed: {e}");
+                        }
+                    } else {
+                        eprintln!("Write to NVRAM requested with no device connected");
+                    }
+                }
                 Err(TryRecvError::Empty) => break,
             }
         }

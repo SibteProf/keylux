@@ -69,6 +69,7 @@ pub struct Editor {
     pub status: Option<String>,
     /// Stream the composited preview to the physical keyboard while editing.
     pub live: bool,
+    pub frame_requested: bool,
 
     /// Layer-stack snapshots for undo (newest last) and redo.
     undo: Vec<Vec<Layer>>,
@@ -107,6 +108,7 @@ impl Editor {
             playhead: 0.0,
             playing: false,
             dirty: false,
+            frame_requested: false,
             file_name,
             status: None,
             live: false,
@@ -427,6 +429,10 @@ fn top_bar(ui: &mut egui::Ui, ed: &mut Editor, anim_dir: &std::path::Path) {
                 "Stream the composited preview to the real keyboard as you edit.\n\
                  Smoothest over the cable; the 2.4 GHz link updates slowly.",
             );
+        
+        if ui.button("💾 Write frame to NVRAM (permanent)").clicked() {
+            ed.frame_requested = true;
+        }
     });
 }
 
