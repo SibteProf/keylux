@@ -16,3 +16,4 @@
 
 # User content created at runtime
 /animations/*.json
+/animations/*.klx
