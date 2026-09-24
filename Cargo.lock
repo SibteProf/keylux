@@ -329,6 +329,7 @@ dependencies = [
  "aula-protocol",
  "eframe",
  "egui",
+ "gtk",
  "raw-window-handle",
  "rfd",
  "serde",
