@@ -84,9 +84,9 @@ pub const ADDR: [u8; 4] = [0x00, 0x00, 0x01, 0x00];
 
 pub const CONFIG_LEN: usize = 0x0080; // 128
 
-/// Static path: 128 slots x 3 bytes, planar (all R, then all G, then all B).
-pub const STATIC_LEN: usize = 0x0180; // 384
-pub const STATIC_SLOTS: usize = 128;
+/// Static path: 126 slots x 3 bytes, planar (all R, then all G, then all B).
+pub const STATIC_LEN: usize = 0x017a; // 378
+pub const STATIC_SLOTS: usize = 126;
 
 /// Streaming path: 126 slots x 3 bytes, interleaved.
 pub const STREAM_LEN: usize = 0x017a; // 378
