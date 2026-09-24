@@ -114,6 +114,7 @@ pub struct Shared {
     /// UI uses this to restrict wireless to solid colours: the radio cannot keep
     /// up with full-board animation, so animations are blocked over the dongle.
     pub link: Option<Link>,
+    pub last_nvram_result: Option<Result<String, String>>,
 }
 
 impl Shared {
@@ -134,6 +135,7 @@ impl Shared {
             scanning: false,
             max_fps_ceiling: p::MAX_FPS,
             link: None,
+            last_nvram_result: None,
         }
     }
 }
@@ -290,13 +292,15 @@ fn run(
                 Ok(Cmd::LivePreview(frame)) => live_preview = frame,
                 Ok(Cmd::WriteToNVRAM(frame)) => {
                     let frame = frame.unwrap_or_else(|| shared.lock().unwrap().frame.clone());
-                    if let Some(kb) = device.as_mut() {
-                        if let Err(e) = kb.set_static(&frame) {
-                            eprintln!("Write to NVRAM failed: {e}");
+                    let result = match device.as_mut() {
+                        Some(kb) => match kb.set_static(&frame) {
+                            Ok(()) => Ok(String::new()),
+                            Err(e) => Err(String::from(format!("{e}"))),                          
                         }
-                    } else {
-                        eprintln!("Write to NVRAM requested with no device connected");
-                    }
+                        None => Err("No device connected".into()),
+                    };
+                    shared.lock().unwrap().last_nvram_result = Some(result);
+                    repaint();
                 }
                 Err(TryRecvError::Empty) => break,
             }
