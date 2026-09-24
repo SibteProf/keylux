@@ -54,6 +54,11 @@ fn main() -> anyhow::Result<()> {
         ..Default::default()
     };
 
+    if let Err(e) = gtk::init() {
+        eprintln!("Failed to initialize GTK: {e}");
+        std::process::exit(1);
+    }
+
     eframe::run_native(
         "keylux",
         options,
