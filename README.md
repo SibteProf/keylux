@@ -51,7 +51,30 @@ libraries).
 cargo build --release
 ```
 
-### Linux permissions
+### Linux permissions and dependencies
+
+Building `keylux` needs the GTK 3 development headers and a few system
+libraries for HID and input emulation. Install this packages for your
+distribution before running `cargo build --release`.
+
+**Debian/Ubuntu**
+
+```bash
+sudo apt update
+sudo apt install libgtk-3-dev libxdo-dev libudev-dev libusb-v1.0-0-dev pkg-config
+```
+
+**RHEL/Fedora**
+
+```bash
+sudo dnf install gtk3-devel libxdo-devel libudev-devel libusb1-devel pkg-config
+```
+
+**Arch/Manjaro**
+
+```bash
+sudo pacman -S gtk3 xdotool libusb pkgconf
+```
 
 Opening the vendor HID interface needs a udev rule:
 
