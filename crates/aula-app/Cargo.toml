@@ -26,3 +26,6 @@ serde_json.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows-sys.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = "0.18.2"
