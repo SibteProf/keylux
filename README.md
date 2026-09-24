@@ -61,19 +61,19 @@ distribution before running `cargo build --release`.
 
 ```bash
 sudo apt update
-sudo apt install libgtk-3-dev libxdo-dev libudev-dev libusb-v1.0-0-dev
+sudo apt install libgtk-3-dev libxdo-dev libudev-dev libusb-v1.0-0-dev pkg-config
 ```
 
 **RHEL/Fedora**
 
 ```bash
-sudo dnf install gtk3-devel libxdo-devel libudev-devel libusb1-devel 
+sudo dnf install gtk3-devel libxdo-devel libudev-devel libusb1-devel pkg-config
 ```
 
 **Arch/Manjaro**
 
 ```bash
-sudo pacman -S gtk3 xdotools libusb 
+sudo pacman -S gtk3 xdotool libusb pkgconf
 ```
 
 Opening the vendor HID interface needs a udev rule:
