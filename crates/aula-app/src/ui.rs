@@ -791,14 +791,14 @@ impl eframe::App for App {
                     if ed.frame_requested {
                         ed.frame_requested = false;
                         let f = ed.preview_frame(ed.comp.leds, &layout);
-                        self.engine.send(Cmd::WriteToNVRAM(Some(f)));
+                        self.engine.send(Cmd::WriteToNvram(f));
                     }
 
-                    if let Some(result) = self.engine.shared.lock().unwrap().last_nvram_result.take() {
+                    if let Some(result) =
+                        self.engine.shared.lock().unwrap().last_nvram_result.take()
+                    {
                         ed.nvram_result = Some(result);
                     }
-
-
                     // Stream the editor's preview to the board while the toggle
                     // is on, so the keyboard follows the brush.
                     if ed.live {

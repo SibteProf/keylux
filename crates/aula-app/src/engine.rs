@@ -38,7 +38,7 @@ pub enum Cmd {
         deep: bool,
     },
     Shutdown,
-    WriteToNVRAM(Option<Frame>),
+    WriteToNvram(Frame),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -114,7 +114,7 @@ pub struct Shared {
     /// UI uses this to restrict wireless to solid colours: the radio cannot keep
     /// up with full-board animation, so animations are blocked over the dongle.
     pub link: Option<Link>,
-    pub last_nvram_result: Option<Result<String, String>>,
+    pub last_nvram_result: Option<Result<(), String>>,
 }
 
 impl Shared {
@@ -290,13 +290,9 @@ fn run(
                     publish_effects(&shared, &reg);
                 }
                 Ok(Cmd::LivePreview(frame)) => live_preview = frame,
-                Ok(Cmd::WriteToNVRAM(frame)) => {
-                    let frame = frame.unwrap_or_else(|| shared.lock().unwrap().frame.clone());
+                Ok(Cmd::WriteToNvram(frame)) => {
                     let result = match device.as_mut() {
-                        Some(kb) => match kb.set_static(&frame) {
-                            Ok(()) => Ok(String::new()),
-                            Err(e) => Err(String::from(format!("{e}"))),                          
-                        }
+                        Some(kb) => kb.set_static(&frame).map_err(|e| e.to_string()),
                         None => Err("No device connected".into()),
                     };
                     shared.lock().unwrap().last_nvram_result = Some(result);

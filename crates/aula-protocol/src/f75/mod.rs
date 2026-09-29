@@ -290,7 +290,7 @@ impl F75 {
         self.last_write = Some(Instant::now());
     }
 
-    /// Encode a frame for the STATIC path: planar, 128 slots.
+    /// Encode a frame for the STATIC path: planar, 126 slots.
     fn encode_static(&self, frame: &Frame) -> Vec<u8> {
         let mut buf = vec![0u8; p::STATIC_LEN];
         for i in 0..p::STATIC_SLOTS {
@@ -466,9 +466,21 @@ mod tests {
     }
 
     #[test]
+    fn static_capture_marker_uses_126_byte_planes() {
+        let mut f = Frame::black(p::STATIC_SLOTS);
+        f.set(0, Rgb::new(0xab, 0xcd, 0xef));
+        let buf = encode_static_with(ChannelOrder::Rgb, &f);
+
+        assert_eq!(buf[0], 0xab);
+        assert_eq!(buf[p::STATIC_SLOTS], 0xcd);
+        assert_eq!(buf[2 * p::STATIC_SLOTS], 0xef);
+        assert_eq!(buf.iter().filter(|b| **b != 0).count(), 3);
+    }
+
+    #[test]
     fn encoded_lengths_match_protocol() {
         let f = Frame::solid(p::STATIC_SLOTS, Rgb::WHITE);
-        assert_eq!(encode_static_with(ChannelOrder::Rgb, &f).len(), 384);
+        assert_eq!(encode_static_with(ChannelOrder::Rgb, &f).len(), 378);
         assert_eq!(encode_stream_with(ChannelOrder::Rgb, &f).len(), 378);
     }
 

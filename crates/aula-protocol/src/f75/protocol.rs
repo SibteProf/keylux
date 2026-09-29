@@ -50,7 +50,7 @@ pub mod cmd {
     /// Read the 128-byte config block.
     pub const READ_CONFIG: u8 = 0x84;
 
-    /// Static per-key colours. 384 bytes, PLANAR, persists across reboots.
+    /// Static per-key colours. 378 bytes, PLANAR, persists across reboots.
     ///
     /// Renders one frame correctly, but repeated writes blank the whole board
     /// including the charging indicator. Never use this for animation.

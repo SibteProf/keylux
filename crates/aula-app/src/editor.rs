@@ -70,7 +70,7 @@ pub struct Editor {
     /// Stream the composited preview to the physical keyboard while editing.
     pub live: bool,
     pub frame_requested: bool,
-    pub nvram_result: Option<Result<String, String>>,
+    pub nvram_result: Option<Result<(), String>>,
 
     /// Layer-stack snapshots for undo (newest last) and redo.
     undo: Vec<Vec<Layer>>,
@@ -431,25 +431,22 @@ fn top_bar(ui: &mut egui::Ui, ed: &mut Editor, anim_dir: &std::path::Path) {
                 "Stream the composited preview to the real keyboard as you edit.\n\
                  Smoothest over the cable; the 2.4 GHz link updates slowly.",
             );
-        
+
         if ui.button("💾 Write frame to NVRAM (permanent)").clicked() {
             ed.frame_requested = true;
             ed.nvram_result = None;
         }
 
-        if let Some(result) = &ed.nvram_result {
-            if let Ok(_) = result {
-                ui.colored_label(pal.success, "Success");
-            }
+        if ed.frame_requested {
+            ui.colored_label(pal.text_muted, "Writing...");
+        } else if matches!(ed.nvram_result, Some(Ok(()))) {
+            ui.colored_label(pal.success, "Saved");
         }
     });
-    // This horizontal box appears only if write to NVRAM is failed
-    if let Some(result) = &ed.nvram_result {
-        if let Err(msg) = result {
-            ui.horizontal(|ui| {
-                ui.colored_label(pal.danger, format!("Write to NVRAM failed: {msg}"));
-            }); 
-        }
+    if let Some(Err(msg)) = &ed.nvram_result {
+        ui.horizontal(|ui| {
+            ui.colored_label(pal.danger, format!("Write to NVRAM failed: {msg}"));
+        });
     }
 }
 
