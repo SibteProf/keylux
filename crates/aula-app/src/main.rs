@@ -1,3 +1,8 @@
+#![cfg_attr(
+    all(target_os = "windows", not(debug_assertions)),
+    windows_subsystem = "windows"
+)]
+
 //! `keylux` — desktop control for AULA keyboard lighting.
 //!
 //! Runs the GUI by default. Any argument drops to the CLI, which is handy for
