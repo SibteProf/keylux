@@ -44,7 +44,7 @@ libraries).
 
 - **Windows** — [rustup](https://rustup.rs) plus Visual Studio Build Tools with
   the C++ workload
-- **Linux** — rustup, plus `libudev-dev` and `pkg-config`
+- **Linux** — rustup, plus the distro-specific packages listed below
 - **macOS** — rustup and Xcode command line tools
 
 ```bash
@@ -54,14 +54,14 @@ cargo build --release
 ### Linux permissions and dependencies
 
 Building `keylux` needs the GTK 3 development headers and a few system
-libraries for HID and input emulation. Install this packages for your
+libraries for HID and input emulation. Install these packages for your
 distribution before running `cargo build --release`.
 
 **Debian/Ubuntu**
 
 ```bash
 sudo apt update
-sudo apt install libgtk-3-dev libxdo-dev libudev-dev libusb-v1.0-0-dev pkg-config
+sudo apt install libgtk-3-dev libxdo-dev libudev-dev libusb-1.0-0-dev pkg-config
 ```
 
 **RHEL/Fedora**
