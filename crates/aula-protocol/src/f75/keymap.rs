@@ -16,27 +16,27 @@ use crate::device::KeyPos;
 /// LED index -> key name, straight from the firmware's matrix table.
 #[rustfmt::skip]
 pub const LED_ORDER: [Option<&str>; 90] = [
-    Some("Esc"), Some("`"), Some("Tab"), Some("Caps"), Some("LShift"), Some("LCtrl"), None, 
-    Some("1"), Some("Q"), Some("A"), Some("Z"), Some("LWin"), 
-    Some("F1"), Some("2"), Some("W"), Some("S"), Some("X"), Some("LAlt"), 
+    Some("Esc"), Some("`"), Some("Tab"), Some("Caps"), Some("LShift"), Some("LCtrl"), None,
+    Some("1"), Some("Q"), Some("A"), Some("Z"), Some("LWin"),
+    Some("F1"), Some("2"), Some("W"), Some("S"), Some("X"), Some("LAlt"),
     Some("F2"), Some("3"), Some("E"), Some("D"), Some("C"), None,
-    Some("F3"), Some("4"), Some("R"), Some("F"), Some("V"), None, 
-    Some("F4"), Some("5"), Some("T"), Some("G"), Some("B"), Some("Space"), 
-    Some("F5"), Some("6"), Some("Y"), Some("H"), Some("N"), None, 
+    Some("F3"), Some("4"), Some("R"), Some("F"), Some("V"), None,
+    Some("F4"), Some("5"), Some("T"), Some("G"), Some("B"), Some("Space"),
+    Some("F5"), Some("6"), Some("Y"), Some("H"), Some("N"), None,
     Some("F6"), Some("7"), Some("U"), Some("J"), Some("M"), None,
-    Some("F7"), Some("8"), Some("I"), Some("K"), Some(","), Some("Fn"), 
-    Some("F8"), Some("9"), Some("O"), Some("L"), Some("."), Some("RCtrl"), 
-    Some("F9"), Some("0"), Some("P"), Some(";"), Some("/"), None, 
+    Some("F7"), Some("8"), Some("I"), Some("K"), Some(","), Some("Fn"),
+    Some("F8"), Some("9"), Some("O"), Some("L"), Some("."), Some("RCtrl"),
+    Some("F9"), Some("0"), Some("P"), Some(";"), Some("/"), None,
     Some("F10"), Some("-"), Some("["), Some("'"), Some("RShift"), None,
-    Some("F11"), Some("="), Some("]"), None, None, Some("Left"), 
-    Some("F12"), Some("Backspace"), Some("\\"), Some("Enter"), Some("Up"), Some("Down"), None, 
+    Some("F11"), Some("="), Some("]"), None, None, Some("Left"),
+    Some("F12"), Some("Backspace"), Some("\\"), Some("Enter"), Some("Up"), Some("Down"), None,
     Some("Del"), Some("PgUp"), Some("PgDn"), Some("End"), Some("Right"),
 ];
 
 /// Physical rows: (key name, width in 1u units), left to right.
 #[rustfmt::skip]
 const ROWS: &[&[(&str, f32)]] = &[
-    &[("Esc", 1.0), ("", 0.9), ("F1", 1.0), ("F2", 1.0), ("F3", 1.0), ("F4", 1.0), ("", 0.4), ("F5", 1.0), 
+    &[("Esc", 1.0), ("", 0.9), ("F1", 1.0), ("F2", 1.0), ("F3", 1.0), ("F4", 1.0), ("", 0.4), ("F5", 1.0),
       ("F6", 1.0), ("F7", 1.0), ("F8", 1.0), ("", 0.4), ("F9", 1.0), ("F10", 1.0), ("F11", 1.0), ("F12", 1.0),
       ("Knob", 1.0)],
     &[("`", 1.0), ("1", 1.0), ("2", 1.0), ("3", 1.0), ("4", 1.0), ("5", 1.0), ("6", 1.0), ("7", 1.0),
@@ -44,7 +44,7 @@ const ROWS: &[&[(&str, f32)]] = &[
     &[("Tab", 1.5), ("Q", 1.0), ("W", 1.0), ("E", 1.0), ("R", 1.0), ("T", 1.0), ("Y", 1.0), ("U", 1.0),
       ("I", 1.0), ("O", 1.0), ("P", 1.0), ("[", 1.0), ("]", 1.0), ("\\", 1.5), ("PgUp", 1.0)],
     &[("Caps", 1.75), ("A", 1.0), ("S", 1.0), ("D", 1.0), ("F", 1.0), ("G", 1.0), ("H", 1.0), ("J", 1.0),
-      ("K", 1.0), ("L", 1.0), (";", 1.0), ("'", 1.0), ("Enter", 2.25), ("PgDn", 1.0)],  // ("Home", 1.0)],
+      ("K", 1.0), ("L", 1.0), (";", 1.0), ("'", 1.0), ("Enter", 2.25), ("PgDn", 1.0)],
     &[("LShift", 2.25), ("Z", 1.0), ("X", 1.0), ("C", 1.0), ("V", 1.0), ("B", 1.0), ("N", 1.0), ("M", 1.0),
       (",", 1.0), (".", 1.0), ("/", 1.0), ("RShift", 1.75), ("Up", 1.0), ("End", 1.0)],
     &[("LCtrl", 1.25), ("LWin", 1.25), ("LAlt", 1.25), ("Space", 6.25), ("Fn", 1.25),
@@ -118,6 +118,12 @@ mod tests {
     }
 
     #[test]
+    fn minus_has_an_led_but_knob_does_not() {
+        assert_eq!(led_for("-"), Some(67));
+        assert_eq!(led_for("Knob"), None);
+    }
+
+    #[test]
     fn layout_is_populated_and_unique() {
         let keys = layout();
         assert!(
@@ -145,5 +151,15 @@ mod tests {
         let keys = layout();
         let space = keys.iter().find(|k| k.name == "Space").unwrap();
         assert!(space.w >= 3.0, "effects rely on w to skip oversized keys");
+    }
+
+    #[test]
+    fn del_sits_after_backspace_on_the_number_row() {
+        let keys = layout();
+        let backspace = keys.iter().find(|k| k.name == "Backspace").unwrap();
+        let del = keys.iter().find(|k| k.name == "Del").unwrap();
+
+        assert_eq!(del.row, backspace.row);
+        assert!(del.x > backspace.x);
     }
 }
