@@ -11,7 +11,7 @@
 
 use eframe::egui;
 
-use aula_protocol::{Frame, KeyPos};
+use aula_protocol::{Frame, KeyPos, Rgb};
 
 use crate::theme;
 
@@ -82,27 +82,57 @@ pub fn draw_board(ui: &egui::Ui, rect: egui::Rect, layout: &[KeyPos], frame: &Fr
         painter.rect_filled(key_rect, 2.0, fill);
         painter.rect_stroke(key_rect, 2.0, egui::Stroke::new(0.5_f32, pal.key_stroke));
 
-        let key_text_color = if c.is_black() {
-            pal.text_muted // Set dimmed text on disabled LEDs
-        } else { // Else get LED luminance (from Rec.709 TV standard formula) and compare with contrast threshold (150)
-            let lum = 0.2126 * c.r as f32 + 0.7152 * c.g as f32 + 0.0722 * c.b as f32;
-            if lum > 160.0 {
-                egui::Color32::BLACK
-            } else {
-                egui::Color32::WHITE
-            }
-        };
-
         painter.text(
             key_rect.center(),
             egui::Align2::CENTER_CENTER,
             k.name,
             egui::FontId::proportional(10.0),
-            key_text_color
+            key_label_color(c, pal.text_muted),
         );
 
         boxes.push((key_rect, k.led));
     }
 
     BoardGeom { boxes }
+}
+
+fn key_label_color(c: Rgb, muted: egui::Color32) -> egui::Color32 {
+    if c.is_black() {
+        return muted;
+    }
+
+    let luminance = 0.2126 * f32::from(c.r) + 0.7152 * f32::from(c.g) + 0.0722 * f32::from(c.b);
+    if luminance > 160.0 {
+        egui::Color32::BLACK
+    } else {
+        egui::Color32::WHITE
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dark_blue_keys_get_light_labels() {
+        assert_eq!(
+            key_label_color(Rgb::new(0, 0, 180), egui::Color32::GRAY),
+            egui::Color32::WHITE
+        );
+    }
+
+    #[test]
+    fn bright_keys_get_dark_labels() {
+        assert_eq!(
+            key_label_color(Rgb::new(245, 245, 245), egui::Color32::GRAY),
+            egui::Color32::BLACK
+        );
+    }
+
+    #[test]
+    fn unlit_keys_use_muted_labels() {
+        let muted = egui::Color32::from_rgb(90, 90, 90);
+
+        assert_eq!(key_label_color(Rgb::BLACK, muted), muted);
+    }
 }
