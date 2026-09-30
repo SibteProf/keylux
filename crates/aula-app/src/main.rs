@@ -46,8 +46,8 @@ fn main() -> anyhow::Result<()> {
     let (rgba, w, h) = tray::icon_rgba();
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
-            .with_inner_size([880.0, 620.0])
-            .with_min_inner_size([640.0, 480.0])
+            .with_inner_size([750.0, 732.0])
+            .with_min_inner_size([750.0, 732.0])
             .with_title("keylux")
             // The taskbar/title-bar icon, same mark as the tray, instead of
             // eframe's default "e".
