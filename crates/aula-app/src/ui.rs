@@ -4,11 +4,12 @@ use eframe::egui;
 
 use aula_effects::{ParamKind, Params, Value};
 use aula_protocol::{Link, Rgb};
+use strum::IntoEnumIterator;
 
 use crate::board;
 use crate::editor::{self, Editor};
 use crate::engine::{Cmd, DeviceStatus, Engine};
-use crate::settings::{CloseAction, Settings};
+use crate::settings::{CloseAction, ColorTheme, Settings};
 use crate::theme;
 use crate::tray::{Tray, TrayAction};
 use crate::window_ctl::WindowRef;
@@ -58,9 +59,10 @@ pub struct App {
 
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>, effects_dir: std::path::PathBuf) -> Self {
+        let settings = Settings::load();
+        theme::set_current(settings.color_theme);
         theme::current().apply(&cc.egui_ctx);
         let ctx = cc.egui_ctx.clone();
-        let settings = Settings::load();
         let engine = Engine::spawn(
             effects_dir.clone(),
             settings.pinned_device(),
@@ -606,6 +608,24 @@ impl eframe::App for App {
                     let label = if running { "⏸ Pause" } else { "▶ Play" };
                     if ui.button(label).clicked() {
                         self.engine.send(Cmd::SetRunning(!running));
+                    }
+                    // Theme switcher
+                    let resp = egui::ComboBox::from_label("Theme")
+                        .selected_text(self.settings.color_theme.to_string())
+                        .show_ui(ui, |ui| {
+                            for theme in ColorTheme::iter() {
+                                ui.selectable_value(
+                                    &mut self.settings.color_theme,
+                                    theme,
+                                    theme.to_string(),
+                                );
+                            }
+                        });
+                    ui.add_space(16.0);
+                    if resp.inner == Some(()) {
+                        theme::set_current(self.settings.color_theme);
+                        theme::current().apply(ui.ctx());
+                        self.settings.save();
                     }
                 });
             });

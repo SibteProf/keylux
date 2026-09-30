@@ -1,21 +1,27 @@
-//! One central palette, applied once at startup.
-//!
 //! Before this module the status and board colours were inline `Color32`
 //! literals repeated across `ui.rs` and `editor.rs`, which drifted apart and
 //! made a coherent look impossible. Everything visual now names a token here,
-//! so the whole app can be reskinned — or given a light theme — in one place.
+//! so the whole app can be reskinned in one place.
 
 use eframe::egui::{self, Color32};
+use std::sync::RwLock;
 
-/// Named colour tokens. Dark-first, matching the app's existing look, but
-/// centralised so a second [`Palette`] could define a light theme later.
+/// Use `RwLock` for blocking access to current palette
+static CURRENT: RwLock<&'static Palette> = RwLock::new(&DARK);
+
+/// Named colour tokens. Dark/Light-first, matching the app's existing look, but
+/// centralised so a other [`Palette`]-s could define an another theme later.
 pub struct Palette {
-    /// Window background, behind every panel.
+    /// Is this theme dark.
+    pub dark_mode: bool,
+    /// Window background, behind every panel. Also a `TextEdit` background.
     pub bg: Color32,
     /// Panel and card fill.
     pub surface: Color32,
-    /// Slightly raised fill: selected rows, inset wells.
+    /// Slightly changed fill: buttons, selected rows, inset wells.
     pub surface_alt: Color32,
+    /// Buttons background when hover
+    pub hovered_bg: Color32,
     pub text: Color32,
     pub text_muted: Color32,
     /// Selection / focus / primary action.
@@ -36,12 +42,14 @@ pub struct Palette {
 
 /// The default dark palette.
 pub const DARK: Palette = Palette {
+    dark_mode: true,
     bg: Color32::from_gray(16),
     surface: Color32::from_gray(24),
     surface_alt: Color32::from_gray(34),
+    hovered_bg: Color32::from_gray(34),
     text: Color32::from_gray(225),
     text_muted: Color32::from_gray(150),
-    accent: Color32::from_rgb(120, 190, 255),
+    accent: Color32::from_rgb(95, 145, 192),
     success: Color32::from_rgb(80, 200, 120),
     warning: Color32::from_rgb(230, 170, 60),
     danger: Color32::from_rgb(220, 90, 90),
@@ -50,10 +58,38 @@ pub const DARK: Palette = Palette {
     board_bg: Color32::from_gray(18),
 };
 
-/// The palette in force. A single constant for now; a settings-driven switch
-/// would assign this.
+/// The light palette.
+pub const LIGHT: Palette = Palette {
+    dark_mode: false,
+    bg: Color32::from_rgb(246, 247, 248),
+    surface: Color32::from_rgb(253, 254, 255),
+    surface_alt: Color32::from_gray(240),
+    hovered_bg: Color32::from_gray(240),
+    text: Color32::from_rgb(65, 72, 82),
+    text_muted: Color32::from_rgb(119, 127, 137),
+    accent: Color32::from_rgb(138, 185, 230),
+    success: Color32::from_rgb(40, 160, 80),
+    warning: Color32::from_rgb(190, 130, 20),
+    danger: Color32::from_rgb(190, 60, 60),
+    key_unlit: Color32::from_rgb(241, 243, 245),
+    key_stroke: Color32::from_rgb(217, 222, 229),
+    board_bg: Color32::from_rgb(250, 251, 252),
+};
+
+/// Return the current selected palette
 pub fn current() -> &'static Palette {
-    &DARK
+    *CURRENT.read().unwrap()
+}
+
+/// Switch the active palette.
+pub fn set_current(theme: crate::settings::ColorTheme) {
+    use crate::settings::ColorTheme;
+
+    let pal = match theme {
+        ColorTheme::Dark => &DARK,
+        ColorTheme::Light => &LIGHT,
+    };
+    *CURRENT.write().unwrap() = pal;
 }
 
 impl Palette {
@@ -63,13 +99,13 @@ impl Palette {
         let mut style = (*ctx.style()).clone();
         let v = &mut style.visuals;
 
-        v.dark_mode = true;
+        v.dark_mode = self.dark_mode;
         v.override_text_color = Some(self.text);
         v.panel_fill = self.surface;
         v.window_fill = self.surface;
         v.extreme_bg_color = self.bg;
         v.faint_bg_color = self.surface_alt;
-        v.selection.bg_fill = self.accent.linear_multiply(0.45);
+        v.selection.bg_fill = self.accent;
         v.selection.stroke = egui::Stroke::new(1.0_f32, self.accent);
         v.hyperlink_color = self.accent;
 
@@ -83,8 +119,22 @@ impl Palette {
         ] {
             w.rounding = rounding;
         }
+
+        // Enable left side of slider fill (which is disabled in light mode by default)
+        v.slider_trailing_fill = true;
+
+        // Buttons and combo-box
         v.widgets.inactive.weak_bg_fill = self.surface_alt;
-        v.widgets.hovered.weak_bg_fill = self.surface_alt.linear_multiply(1.4);
+        v.widgets.hovered.weak_bg_fill = self.hovered_bg;
+        v.widgets.active.weak_bg_fill = self.hovered_bg;
+        v.widgets.noninteractive.weak_bg_fill = self.hovered_bg; // disabled buttons
+        v.widgets.open.weak_bg_fill = self.accent; // combo-box while opened
+
+        // Slider dot color when interacting
+        v.widgets.active.bg_fill = self.accent;
+
+        // Separators color
+        v.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0_f32, self.key_stroke);
 
         style.spacing.item_spacing = egui::vec2(8.0, 7.0);
         style.spacing.button_padding = egui::vec2(8.0, 4.0);

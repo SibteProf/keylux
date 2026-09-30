@@ -7,8 +7,10 @@
 
 use std::path::PathBuf;
 
+use crate::settings::ColorTheme::Dark;
 use aula_protocol::DeviceId;
 use serde::{Deserialize, Serialize};
+use strum::EnumIter;
 
 /// What the window's close button does.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -23,6 +25,19 @@ pub enum CloseAction {
     Tray,
     /// Quit, which also turns the lighting loop off.
     Quit,
+}
+
+/// Current themes; using enum instead of bool so
+/// more themes can be added without changing
+/// the persisted format.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, EnumIter, strum::Display,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ColorTheme {
+    #[default]
+    Dark,
+    Light,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -52,6 +67,8 @@ pub struct Settings {
     /// runs. Remembering it here means normal startup finds it again without
     /// ever probing unrecognised hardware on a timer.
     pub known_devices: Vec<String>,
+    /// Current selected theme
+    pub color_theme: ColorTheme,
 }
 
 impl Default for Settings {
@@ -63,6 +80,7 @@ impl Default for Settings {
             max_fps: aula_protocol::f75::protocol::MAX_FPS,
             device: None,
             known_devices: Vec::new(),
+            color_theme: Dark,
         }
     }
 }
@@ -147,6 +165,7 @@ mod tests {
             max_fps: 12,
             device: Some("3554:fa09".into()),
             known_devices: vec!["3554:fa09".into()],
+            color_theme: ColorTheme::Light,
         };
         let json = serde_json::to_string(&s).unwrap();
         let back: Settings = serde_json::from_str(&json).unwrap();
