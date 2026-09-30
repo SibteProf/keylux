@@ -149,8 +149,11 @@ reference/         the original TypeScript prototype, kept as provenance
 - [x] Rhai scripting host with hot reload
 - [x] egui app: live keyboard preview, effect picker, auto-generated controls
 - [x] Timeline editor and GIF/image import
-- [x] System tray
+- [x] System tray on Windows
+- [ ] Theme switching (dark / light)
+- [ ] Per-application profiles
 - [ ] Packaged releases
+- [ ] System tray on Linux and macOS
 - [ ] A second device behind the same `RgbDevice` trait
 
 ## Running in the tray
