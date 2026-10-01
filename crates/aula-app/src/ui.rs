@@ -8,6 +8,7 @@ use aula_protocol::{Link, Rgb};
 use crate::board;
 use crate::editor::{self, Editor};
 use crate::engine::{Cmd, DeviceStatus, Engine};
+use crate::profiles::{Profile, ProfilesStore, DEFAULT_APP_ID};
 use crate::settings::{CloseAction, Settings};
 use crate::theme;
 use crate::tray::{Tray, TrayAction};
@@ -17,6 +18,7 @@ use crate::window_ctl::WindowRef;
 enum Tab {
     Play,
     Create,
+    Profiles,
     Settings,
 }
 
@@ -37,6 +39,9 @@ pub struct App {
     live_active: bool,
 
     settings: Settings,
+    /// Per-application profiles. Loaded from `profiles/` at startup and
+    /// written back through the UI
+    profiles: ProfilesStore,
     /// `None` when the tray could not be created. Everything that hides the
     /// window checks this first — without a tray there would be no way back.
     tray: Option<Tray>,
@@ -72,6 +77,14 @@ impl App {
             .map(|p| p.join("animations"))
             .unwrap_or_else(|| std::path::PathBuf::from("animations"));
         let _ = std::fs::create_dir_all(&anim_dir);
+        
+        let profiles_dir = effects_dir
+            .parent()
+            .map(|p| p.join("profiles"))
+            .unwrap_or_else(|| std::path::PathBuf::from("profiles"));
+        let profiles = ProfilesStore::load(profiles_dir);
+
+
 
         // Captured once at startup: the only way to reach a hidden window,
         // since egui cannot repaint one and so never runs `update` for it.
@@ -116,6 +129,7 @@ impl App {
             live_active: false,
 
             settings,
+            profiles,
             tray,
             window,
             confirm_close: false,
@@ -761,6 +775,7 @@ impl eframe::App for App {
                         self.editor = Some(Editor::new(frame.len().max(1)));
                     }
                 }
+                ui.selectable_value(&mut self.tab, Tab::Profiles, "↔ Profiles");
                 ui.selectable_value(&mut self.tab, Tab::Settings, "⚙ Settings");
             });
             ui.separator();
@@ -778,6 +793,11 @@ impl eframe::App for App {
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     self.settings_ui(ui);
                 });
+                return;
+            }
+
+            if self.tab == Tab::Profiles {
+                ui.label("Profiles");
                 return;
             }
 

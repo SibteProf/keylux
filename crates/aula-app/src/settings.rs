@@ -52,6 +52,10 @@ pub struct Settings {
     /// runs. Remembering it here means normal startup finds it again without
     /// ever probing unrecognised hardware on a timer.
     pub known_devices: Vec<String>,
+    /// Whether per-application profiles are applied. Off by default: the
+    /// lighting should not start changing on its own the moment an
+    /// application gets focus, until the user asks for it.
+    pub profiles_enabled: bool,
 }
 
 impl Default for Settings {
@@ -63,6 +67,7 @@ impl Default for Settings {
             max_fps: aula_protocol::f75::protocol::MAX_FPS,
             device: None,
             known_devices: Vec::new(),
+            profiles_enabled: false,
         }
     }
 }
@@ -147,6 +152,7 @@ mod tests {
             max_fps: 12,
             device: Some("3554:fa09".into()),
             known_devices: vec!["3554:fa09".into()],
+            profiles_enabled: true,
         };
         let json = serde_json::to_string(&s).unwrap();
         let back: Settings = serde_json::from_str(&json).unwrap();
