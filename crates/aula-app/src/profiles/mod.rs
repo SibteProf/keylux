@@ -23,6 +23,8 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+pub mod window_focus;
+
 /// The `app_id` reserved for the fallback profile.
 ///
 /// A profile with this id is what runs when the foreground application has no
@@ -73,7 +75,7 @@ pub struct ProfilesStore {
 
 impl ProfilesStore {
     /// Read every profile in `dir`.
-    /// 
+    ///
     /// Corrupted files and non-JSON files are skipped;
     /// Filenames are not checked against the `app_id` inside: the name is only
     /// an address, and `app_id` is what matching reads. This lets a user keep
@@ -98,13 +100,15 @@ impl ProfilesStore {
             };
             let mut profile: Profile = match serde_json::from_str(&text) {
                 Ok(p) => p,
-                Err(_) => { continue; }
+                Err(_) => {
+                    continue;
+                }
             };
-            
-            // On case-sensitive fylesystems, `Firefox.json` and `firefox.json` 
-            // are two different files, and only the lower-case one is read — 
-            // a stray rename or a manual copy cannot produce a second profile 
-            // for the same application. On Windows and macOS the filesystem 
+
+            // On case-sensitive fylesystems, `Firefox.json` and `firefox.json`
+            // are two different files, and only the lower-case one is read —
+            // a stray rename or a manual copy cannot produce a second profile
+            // for the same application. On Windows and macOS the filesystem
             // cannot tell the two names apart, so the name is read as if it were lower-case.
             if CASE_SENSITIVE_FS {
                 let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
@@ -123,7 +127,7 @@ impl ProfilesStore {
         }
 
         Self { dir, list }
-    } 
+    }
 
     /// Write a profile file
     ///

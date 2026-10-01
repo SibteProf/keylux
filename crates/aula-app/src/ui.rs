@@ -77,14 +77,12 @@ impl App {
             .map(|p| p.join("animations"))
             .unwrap_or_else(|| std::path::PathBuf::from("animations"));
         let _ = std::fs::create_dir_all(&anim_dir);
-        
+
         let profiles_dir = effects_dir
             .parent()
             .map(|p| p.join("profiles"))
             .unwrap_or_else(|| std::path::PathBuf::from("profiles"));
         let profiles = ProfilesStore::load(profiles_dir);
-
-
 
         // Captured once at startup: the only way to reach a hidden window,
         // since egui cannot repaint one and so never runs `update` for it.
