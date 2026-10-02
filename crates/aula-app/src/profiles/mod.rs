@@ -35,7 +35,7 @@ pub mod window_focus;
 ///
 /// Reserved: the UI must refuse to let a profile for a real application take this
 /// id, because it is the one id whose meaning is fixed rather than a name.
-pub const DEFAULT_APP_ID: &str = "Default";
+pub const DEFAULT_APP_ID: &str = "default";
 
 /// Whether the filesystem treats `Firefox.json` and `firefox.json` as
 /// different files.
@@ -51,7 +51,7 @@ pub const DEFAULT_APP_ID: &str = "Default";
 pub const CASE_SENSITIVE_FS: bool = cfg!(target_os = "linux");
 
 /// One application bound to one effect
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct Profile {
     /// How the user calls this profile.
     /// Not unique, not used for matching profile,
@@ -63,6 +63,16 @@ pub struct Profile {
     pub app_id: String,
     /// The effect to render, by its registry id (not an index, but id)
     pub effect_id: String,
+}
+/// Default profile.
+impl Default for Profile {
+    fn default() -> Self {
+        Self {
+            name: String::from("Default"),
+            app_id: DEFAULT_APP_ID.to_string(),
+            effect_id: "solid".to_string(),
+        }
+    }
 }
 
 /// Every profile on disk
@@ -126,7 +136,17 @@ impl ProfilesStore {
             list.push(profile);
         }
 
-        Self { dir, list }
+        let mut store = Self { dir, list };
+
+        if !store
+            .list
+            .iter()
+            .any(|p| p.app_id.eq_ignore_ascii_case(DEFAULT_APP_ID))
+        {
+            store.save(None, Profile::default());
+        }
+
+        store
     }
 
     /// Write a profile file
@@ -166,6 +186,22 @@ impl ProfilesStore {
         let json = serde_json::to_string_pretty(&profile).ok()?;
         std::fs::write(&path, json).ok()?;
         Some(path)
+    }
+
+    /// Removes profile from disk by `app_id`
+    pub fn remove(&mut self, app_id: &str) {
+        let Some(i) = self
+            .list
+            .iter()
+            .position(|p| p.app_id.eq_ignore_ascii_case(app_id))
+        else {
+            return;
+        };
+        let path = self
+            .dir
+            .join(format!("{}.json", self.list[i].app_id.to_lowercase()));
+        let _ = std::fs::remove_file(&path);
+        self.list.remove(i);
     }
 
     fn profile_path(&self, app_id: &str) -> PathBuf {

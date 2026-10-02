@@ -39,9 +39,13 @@ pub struct App {
     live_active: bool,
 
     settings: Settings,
-    /// Per-application profiles. Loaded from `profiles/` at startup and
+    /// Per-application profiles store. Loaded from `profiles/` at startup and
     /// written back through the UI
     profiles: ProfilesStore,
+    /// Current selected profile (app_id) in Profiles Tab to edit and buffers for edit it
+    selected_profile: String,
+    /// A buffer for editing profile
+    profile_draft: Option<Profile>,
     /// `None` when the tray could not be created. Everything that hides the
     /// window checks this first — without a tray there would be no way back.
     tray: Option<Tray>,
@@ -128,6 +132,8 @@ impl App {
 
             settings,
             profiles,
+            selected_profile: DEFAULT_APP_ID.to_string(),
+            profile_draft: None,
             tray,
             window,
             confirm_close: false,
@@ -516,6 +522,234 @@ impl App {
             Err(e) => Some(format!("Import failed: {e}")),
         }
     }
+
+    fn profiles_ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        frame: &aula_protocol::Frame,
+        layout: &Vec<aula_protocol::KeyPos>,
+        effects: &Vec<crate::engine::EffectInfo>,
+    ) {
+        // ---- live preview ----
+        let desired = egui::vec2(ui.available_width(), 190.0);
+        let (rect, _) = ui.allocate_exact_size(desired, egui::Sense::hover());
+        board::draw_board(ui, rect, layout, frame);
+        ui.add_space(8.0);
+        ui.separator();
+        // Checkbox for enable/disable profiles feature
+        ui.horizontal(|ui| {
+            ui.heading("Use profiles: ");
+            if ui
+                .add(egui::Checkbox::new(&mut self.settings.profiles_enabled, ""))
+                .changed()
+            {
+                self.settings.save();
+            };
+        });
+        ui.add_space(8.0);
+        if self.settings.profiles_enabled {
+            // Get actual profile
+            // If user is changing profile right now, UI will
+            // show info from draft. And from `profiles`
+            // if there is no draft created.
+            let current_profile = self.profile_draft.as_ref().cloned().unwrap_or_else(|| {
+                self.profiles
+                    .list
+                    .iter()
+                    .find(|p| p.app_id == self.selected_profile)
+                    .cloned()
+                    .unwrap()
+            });
+            // Move the draft state into a separate `bool` to
+            // avoid checking the `Option` via `.is_some` repeatedly
+            // inside the UI closures.
+            let is_editing = self.profile_draft.is_some();
+            // The `app_id` before editing. If user want to change
+            // `app_id` of existing profile, will create a new
+            // profile and remove old profile to avoid duplicates.
+            let old_app_id = &self.selected_profile.clone().to_string();
+            // The label for `profile-selector` ComboBox.
+            // If there are unsaved changes, the `ComboBox` must
+            // clearly indicate this with the text "UNSAVED", hiding
+            // the actual profile name to avoid confusing the user.
+            let selected_profile_name = if is_editing {
+                "UNSAVED".to_string()
+            } else {
+                current_profile.name.clone()
+            };
+            // The text color for`profile-selector` Combobox
+            // Text color changes to the warning color
+            // only when there is an unsaved draft.
+            let profile_color = if is_editing {
+                theme::current().warning
+            } else {
+                theme::current().text
+            };
+            // Find current effect name in a separate variable
+            // before calling the combobox
+            let current_effect_label = effects
+                .iter()
+                .find(|e| e.meta.id == current_profile.effect_id)
+                .map(|e| e.meta.name.clone())
+                .unwrap_or_else(|| {
+                    if current_profile.effect_id.is_empty() {
+                        "- Select -".to_string()
+                    } else {
+                        format!("{} (not found)", current_profile.effect_id)
+                    }
+                });
+            ui.horizontal(|ui| {
+                // Profile selection and control buttons
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    ui.label("Select profile to edit");
+                    let mut profile_selection = self.selected_profile.clone();
+                    egui::ComboBox::from_id_salt("profile-selector")
+                        .selected_text(
+                            egui::RichText::new(selected_profile_name).color(profile_color),
+                        )
+                        .width(ui.available_width() - 210.0)
+                        .show_ui(ui, |ui| {
+                            for profile in &self.profiles.list {
+                                ui.selectable_value(
+                                    &mut profile_selection,
+                                    profile.app_id.clone(),
+                                    &profile.name,
+                                );
+                            }
+                        });
+                    // If user changed the profile while draft is active.
+                    // switch the profile and remove draft.
+                    if profile_selection != self.selected_profile {
+                        self.selected_profile = profile_selection;
+                        self.profile_draft = None;
+                    }
+                    // Create new profile from the default, set the `name`
+                    // of the profile to something neutral and clear the `app_id`
+                    if ui.button("➕ New").clicked() {
+                        let mut new_profile = Profile::default();
+                        new_profile.name = "New Profile".to_string();
+                        new_profile.app_id = String::new();
+                        self.profile_draft = Some(new_profile);
+                    }
+                    // User can save profile only if draft is active AND
+                    // the `app_id` isn't empty
+                    let can_save = is_editing && !current_profile.app_id.trim().is_empty();
+                    if ui
+                        .add_enabled(can_save, egui::Button::new("💾 Save"))
+                        .clicked()
+                    {
+                        // Take the owning of draft from App, temporarily
+                        // setting the draft to None. If `save()` returned
+                        // `None`, bring the draft back to avoid cleared
+                        // fields in form
+                        if let Some(p) = self.profile_draft.take() {
+                            if self.profiles.save(Some(old_app_id), p.clone()).is_some() {
+                                self.selected_profile = p.app_id;
+                            } else {
+                                self.profile_draft = Some(p);
+                            }
+                        }
+                    }
+                    // The default profile (DEFAULT_APP_ID) is a system profile;
+                    // its deletion is blocked at the interface level. After deletion
+                    // any other profile, switch to the default one and delete the draft.
+                    if ui
+                        .add_enabled(
+                            !self.selected_profile.eq_ignore_ascii_case(DEFAULT_APP_ID),
+                            egui::Button::new("✖ Delete"),
+                        )
+                        .clicked()
+                    {
+                        self.profiles.remove(&self.selected_profile);
+                        self.selected_profile = DEFAULT_APP_ID.to_string();
+                        self.profile_draft = None;
+                    };
+                });
+            });
+            ui.add_space(8.0);
+            egui::Grid::new("profile-form")
+                .spacing([12.0, 12.0])
+                .num_columns(2)
+                .show(ui, |ui| {
+                    // -- Profile form --
+                    // In all the input fields below, we pass a temporary
+                    // local string buffer to egui. If the user hasn't
+                    // interacted with the field, `.changed()` returns
+                    // `false`, and the draft remains `None`.
+
+                    // -- Profile name field --
+                    ui.label("Name");
+                    let mut name_buf = current_profile.name.clone();
+                    ui.add_enabled_ui(
+                        !current_profile.app_id.eq_ignore_ascii_case(DEFAULT_APP_ID),
+                        |ui| {
+                            if ui.text_edit_singleline(&mut name_buf).changed() {
+                                let mut d = self
+                                    .profile_draft
+                                    .take()
+                                    .unwrap_or_else(|| current_profile.clone());
+                                d.name = name_buf;
+                                self.profile_draft = Some(d);
+                            }
+                        },
+                    );
+                    ui.end_row();
+                    // -- Application bounded to the profile field --
+                    // TODO: ComboBox with apps launched on the machine
+                    ui.label("Application");
+                    let mut app_buf = current_profile.app_id.clone();
+                    ui.add_enabled_ui(
+                        !current_profile.app_id.eq_ignore_ascii_case(DEFAULT_APP_ID),
+                        |ui| {
+                            if ui.text_edit_singleline(&mut app_buf).changed() {
+                                let mut d = self
+                                    .profile_draft
+                                    .take()
+                                    .unwrap_or_else(|| current_profile.clone());
+                                d.app_id = app_buf;
+                                self.profile_draft = Some(d);
+                            }
+                        },
+                    );
+                    ui.end_row();
+                    // -- Effect selector --
+                    // TODO: Effect parameters
+                    ui.label("Effect");
+                    let draft_ref = &mut self.profile_draft;
+                    let mut effect_buf = current_profile.effect_id.clone();
+                    egui::ComboBox::from_id_salt("effect-selector")
+                        .selected_text(current_effect_label)
+                        .show_ui(ui, |ui| {
+                            for e in effects {
+                                if ui
+                                    .selectable_value(
+                                        &mut effect_buf,
+                                        e.meta.id.clone(),
+                                        &e.meta.name,
+                                    )
+                                    .clicked()
+                                {
+                                    let mut d =
+                                        draft_ref.take().unwrap_or_else(|| current_profile.clone());
+                                    d.effect_id = effect_buf.clone();
+                                    *draft_ref = Some(d);
+                                };
+                            }
+                        });
+                    ui.end_row();
+                });
+            // -- Send frames to engine --
+            // From draft if editing, otherwise from current profile
+            // TODO: send frames depending on app instead.
+            let active_effect_id = &current_profile.effect_id;
+            if let Some(idx) = effects.iter().position(|e| &e.meta.id == active_effect_id) {
+                if self.selected != idx {
+                    self.selected = idx;
+                    self.engine.send(Cmd::SelectEffect(idx));
+                }
+            }
+        }
+    }
 }
 
 fn open_folder(path: &std::path::Path) {
@@ -650,6 +884,15 @@ impl eframe::App for App {
                     ui.add_space(2.0);
                 }
 
+                if self.settings.profiles_enabled {
+                    ui.colored_label(
+                        pal.warning,
+                        "Per-app profiles are enabled. To change the effect, \
+                        go to the Profiles tab.",
+                    );
+                    ui.add_space(2.0);
+                }
+
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     // Group the list so a long folder of scripts and animations
                     // stays scannable: built-ins (0), then scripts (1), then
@@ -691,7 +934,10 @@ impl eframe::App for App {
                             // Animations and compositions can't stream smoothly
                             // over the radio, so they are disabled (not hidden)
                             // while on the dongle.
-                            let blocked = wireless && (e.is_animation || e.is_composition);
+                            // Also user cannot change effect through the side
+                            // panel if per-app profiles are enabled, only from
+                            // Profiles tab.
+                            let blocked = wireless && (e.is_animation || e.is_composition) || self.settings.profiles_enabled;
                             let resp = ui.add_enabled(
                                 !blocked,
                                 egui::SelectableLabel::new(i == self.selected, label),
@@ -706,7 +952,7 @@ impl eframe::App for App {
                             if resp.clicked() && i != self.selected {
                                 self.selected = i;
                                 self.params = Params::from_specs(&e.meta.params);
-                                self.engine.send(Cmd::SelectEffect(i));
+                                    self.engine.send(Cmd::SelectEffect(i));
                                 self.engine.send(Cmd::SetParams(self.params.clone()));
                             }
                         }
@@ -795,7 +1041,7 @@ impl eframe::App for App {
             }
 
             if self.tab == Tab::Profiles {
-                ui.label("Profiles");
+                self.profiles_ui(ui, &frame, &layout, &effects);
                 return;
             }
 
