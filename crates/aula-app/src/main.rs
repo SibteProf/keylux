@@ -12,6 +12,7 @@ mod board;
 mod cli;
 mod editor;
 mod engine;
+mod profiles;
 mod settings;
 mod theme;
 mod tray;
