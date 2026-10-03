@@ -61,6 +61,10 @@ pub struct App {
     profile_draft: Option<Profile>,
     /// `None` when the tray could not be created. Everything that hides the
     /// window checks this first — without a tray there would be no way back.
+    /// True while the form holds a profile that has never been saved — the
+    /// `+ New` case. Save passes `None` for `old_app_id` then, so the store
+    /// creates a profile instead of replacing whatever was selected before.
+    new_profile: bool,
     tray: Option<Tray>,
     /// `None` on platforms with no way to show a hidden window from off the UI
     /// thread. Hiding is refused there for the same reason.
@@ -167,6 +171,7 @@ impl App {
             _profiles_ticker: profiles_ticker,
             selected_profile: DEFAULT_APP_ID.to_string(),
             profile_draft: None,
+            new_profile: false,
             tray,
             window,
             confirm_close: false,
@@ -669,6 +674,7 @@ impl App {
                             ..Default::default()
                         };
                         self.profile_draft = Some(new_profile);
+                        self.new_profile = true;
                     }
                     // User can save profile only if draft is active AND
                     // the `app_id` isn't empty
@@ -682,14 +688,23 @@ impl App {
                         // `None`, bring the draft back to avoid cleared
                         // fields in form
                         if let Some(p) = self.profile_draft.take() {
-                            if self
-                                .profiles
-                                .lock()
-                                .unwrap()
-                                .save(Some(old_app_id), p.clone())
-                                .is_some()
-                            {
+                            let saved_path = match self.new_profile {
+                                true => self
+                                    .profiles
+                                    .lock()
+                                    .unwrap()
+                                    .save(None, p.clone())
+                                    .is_some(),
+                                false => self
+                                    .profiles
+                                    .lock()
+                                    .unwrap()
+                                    .save(Some(old_app_id), p.clone())
+                                    .is_some(),
+                            };
+                            if saved_path {
                                 self.selected_profile = p.app_id;
+                                self.new_profile = false;
                             } else {
                                 self.profile_draft = Some(p);
                             }
@@ -794,7 +809,6 @@ impl App {
                 });
             // -- Send frames to engine --
             // From draft if editing, otherwise from current profile
-            // TODO: send frames depending on app instead.
             let active_effect_id = &current_profile.effect_id;
             if let Some(idx) = effects.iter().position(|e| &e.meta.id == active_effect_id) {
                 if self.selected != idx {
