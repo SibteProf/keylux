@@ -23,6 +23,7 @@ pub fn active_process_name() -> Option<String> {
 /// Get active window on Linux with X11.
 ///
 /// Wayland is not supported.
+#[cfg(target_os = "linux")]
 fn linux_active() -> Option<String> {
     use x11rb::connection::Connection;
     use x11rb::protocol::xproto::{AtomEnum, ConnectionExt};
@@ -64,6 +65,7 @@ pub fn list_windows() -> Vec<String> {
 /// Get list of windows on Linux with X11.
 ///
 /// Wayland is not supported.
+#[cfg(target_os = "linux")]
 fn linux_app_list() -> Vec<String> {
     use x11rb::connection::Connection;
     use x11rb::protocol::xproto::{AtomEnum, ConnectionExt};
@@ -126,6 +128,7 @@ pub fn available() -> bool {
     #[cfg(not(target_os = "linux"))]
     false
 }
+#[cfg(target_os = "linux")]
 fn linux_get_class(conn: &impl x11rb::connection::Connection, window: u32) -> Option<String> {
     use x11rb::protocol::xproto::{AtomEnum, ConnectionExt};
 
