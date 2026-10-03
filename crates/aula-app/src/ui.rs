@@ -1,6 +1,10 @@
 //! egui front end.
 
 use eframe::egui;
+use std::sync::{
+    atomic::{AtomicBool, Ordering::Relaxed},
+    Arc, Mutex,
+};
 
 use aula_effects::{ParamKind, Params, Value};
 use aula_protocol::{Link, Rgb};
@@ -8,7 +12,9 @@ use aula_protocol::{Link, Rgb};
 use crate::board;
 use crate::editor::{self, Editor};
 use crate::engine::{Cmd, DeviceStatus, Engine};
-use crate::profiles::{Profile, ProfilesStore, DEFAULT_APP_ID};
+use crate::profiles::{
+    ticker::ProfilesTicker, window_focus, Profile, ProfilesStore, DEFAULT_APP_ID,
+};
 use crate::settings::{CloseAction, Settings};
 use crate::theme;
 use crate::tray::{Tray, TrayAction};
@@ -39,9 +45,16 @@ pub struct App {
     live_active: bool,
 
     settings: Settings,
+    /// Availability of per-app profiles.
+    profiles_available: bool,
+    /// Synchronized with Settings flag (used in profiles polling)
+    profiles_enabled: Arc<AtomicBool>,
     /// Per-application profiles store. Loaded from `profiles/` at startup and
     /// written back through the UI
-    profiles: ProfilesStore,
+    profiles: Arc<Mutex<ProfilesStore>>,
+    /// Background poller that switches profiles when the focused application
+    /// changes. Held only for its `Drop`, which stops the thread.
+    _profiles_ticker: ProfilesTicker,
     /// Current selected profile (app_id) in Profiles Tab to edit and buffers for edit it
     selected_profile: String,
     /// A buffer for editing profile
@@ -69,7 +82,17 @@ impl App {
     pub fn new(cc: &eframe::CreationContext<'_>, effects_dir: std::path::PathBuf) -> Self {
         theme::current().apply(&cc.egui_ctx);
         let ctx = cc.egui_ctx.clone();
-        let settings = Settings::load();
+        let mut settings = Settings::load();
+        let profiles_available = window_focus::available();
+        // If `profiles_available` will be true, Lunix user who switching to Wayland
+        // can't change the effect cause SideTab blocks if profiles are enabled -
+        // keylux will be useless. Instead of this, we set `profiles_available` to
+        // false, and user (when switches back to X11) just need to enable the feature
+        // one more time.
+        if !profiles_available {
+            settings.profiles_enabled = false;
+        }
+        let profiles_enabled = Arc::new(AtomicBool::new(settings.profiles_enabled));
         let engine = Engine::spawn(
             effects_dir.clone(),
             settings.pinned_device(),
@@ -86,7 +109,14 @@ impl App {
             .parent()
             .map(|p| p.join("profiles"))
             .unwrap_or_else(|| std::path::PathBuf::from("profiles"));
-        let profiles = ProfilesStore::load(profiles_dir);
+        let profiles = Arc::new(Mutex::new(ProfilesStore::load(profiles_dir)));
+
+        let profiles_ticker = ProfilesTicker::spawn(
+            Arc::clone(&profiles),
+            Arc::clone(&profiles_enabled),
+            Arc::clone(&engine.shared),
+            engine.sender(),
+        );
 
         // Captured once at startup: the only way to reach a hidden window,
         // since egui cannot repaint one and so never runs `update` for it.
@@ -131,7 +161,10 @@ impl App {
             live_active: false,
 
             settings,
+            profiles_available,
+            profiles_enabled,
             profiles,
+            _profiles_ticker: profiles_ticker,
             selected_profile: DEFAULT_APP_ID.to_string(),
             profile_draft: None,
             tray,
@@ -527,8 +560,8 @@ impl App {
         &mut self,
         ui: &mut egui::Ui,
         frame: &aula_protocol::Frame,
-        layout: &Vec<aula_protocol::KeyPos>,
-        effects: &Vec<crate::engine::EffectInfo>,
+        layout: &[aula_protocol::KeyPos],
+        effects: &[crate::engine::EffectInfo],
     ) {
         // ---- live preview ----
         let desired = egui::vec2(ui.available_width(), 190.0);
@@ -543,6 +576,8 @@ impl App {
                 .add(egui::Checkbox::new(&mut self.settings.profiles_enabled, ""))
                 .changed()
             {
+                self.profiles_enabled
+                    .store(self.settings.profiles_enabled, Relaxed);
                 self.settings.save();
             };
         });
@@ -554,6 +589,8 @@ impl App {
             // if there is no draft created.
             let current_profile = self.profile_draft.as_ref().cloned().unwrap_or_else(|| {
                 self.profiles
+                    .lock()
+                    .unwrap()
                     .list
                     .iter()
                     .find(|p| p.app_id == self.selected_profile)
@@ -609,7 +646,7 @@ impl App {
                         )
                         .width(ui.available_width() - 210.0)
                         .show_ui(ui, |ui| {
-                            for profile in &self.profiles.list {
+                            for profile in &self.profiles.lock().unwrap().list {
                                 ui.selectable_value(
                                     &mut profile_selection,
                                     profile.app_id.clone(),
@@ -626,9 +663,11 @@ impl App {
                     // Create new profile from the default, set the `name`
                     // of the profile to something neutral and clear the `app_id`
                     if ui.button("➕ New").clicked() {
-                        let mut new_profile = Profile::default();
-                        new_profile.name = "New Profile".to_string();
-                        new_profile.app_id = String::new();
+                        let new_profile = Profile {
+                            name: "New Profile".to_string(),
+                            app_id: String::new(),
+                            ..Default::default()
+                        };
                         self.profile_draft = Some(new_profile);
                     }
                     // User can save profile only if draft is active AND
@@ -643,7 +682,13 @@ impl App {
                         // `None`, bring the draft back to avoid cleared
                         // fields in form
                         if let Some(p) = self.profile_draft.take() {
-                            if self.profiles.save(Some(old_app_id), p.clone()).is_some() {
+                            if self
+                                .profiles
+                                .lock()
+                                .unwrap()
+                                .save(Some(old_app_id), p.clone())
+                                .is_some()
+                            {
                                 self.selected_profile = p.app_id;
                             } else {
                                 self.profile_draft = Some(p);
@@ -660,7 +705,7 @@ impl App {
                         )
                         .clicked()
                     {
-                        self.profiles.remove(&self.selected_profile);
+                        self.profiles.lock().unwrap().remove(&self.selected_profile);
                         self.selected_profile = DEFAULT_APP_ID.to_string();
                         self.profile_draft = None;
                     };
@@ -695,20 +740,29 @@ impl App {
                     );
                     ui.end_row();
                     // -- Application bounded to the profile field --
-                    // TODO: ComboBox with apps launched on the machine
                     ui.label("Application");
                     let mut app_buf = current_profile.app_id.clone();
                     ui.add_enabled_ui(
                         !current_profile.app_id.eq_ignore_ascii_case(DEFAULT_APP_ID),
                         |ui| {
-                            if ui.text_edit_singleline(&mut app_buf).changed() {
-                                let mut d = self
-                                    .profile_draft
-                                    .take()
-                                    .unwrap_or_else(|| current_profile.clone());
-                                d.app_id = app_buf;
-                                self.profile_draft = Some(d);
-                            }
+                            egui::ComboBox::from_id_salt("application-selector")
+                                .selected_text(app_buf.clone())
+                                .show_ui(ui, |ui| {
+                                    let apps = window_focus::list_windows();
+                                    for app in apps {
+                                        if ui
+                                            .selectable_value(&mut app_buf, app.clone(), app)
+                                            .clicked()
+                                        {
+                                            let mut d = self
+                                                .profile_draft
+                                                .take()
+                                                .unwrap_or_else(|| current_profile.clone());
+                                            d.app_id = app_buf.clone();
+                                            self.profile_draft = Some(d);
+                                        };
+                                    }
+                                });
                         },
                     );
                     ui.end_row();
@@ -1019,7 +1073,9 @@ impl eframe::App for App {
                         self.editor = Some(Editor::new(frame.len().max(1)));
                     }
                 }
-                ui.selectable_value(&mut self.tab, Tab::Profiles, "↔ Profiles");
+                if self.profiles_available {
+                    ui.selectable_value(&mut self.tab, Tab::Profiles, "↔ Profiles");
+                }
                 ui.selectable_value(&mut self.tab, Tab::Settings, "⚙ Settings");
             });
             ui.separator();

@@ -23,6 +23,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+pub mod ticker;
 pub mod window_focus;
 
 /// The `app_id` reserved for the fallback profile.
@@ -148,7 +149,6 @@ impl ProfilesStore {
 
         store
     }
-
     /// Write a profile file
     ///
     /// The filename comes from `app_id`, so the same applications always
@@ -172,7 +172,6 @@ impl ProfilesStore {
                 self.list.retain(|p| !p.app_id.eq_ignore_ascii_case(old));
                 self.list.push(profile.clone());
             }
-
             _ => match self
                 .list
                 .iter_mut()
@@ -187,7 +186,6 @@ impl ProfilesStore {
         std::fs::write(&path, json).ok()?;
         Some(path)
     }
-
     /// Removes profile from disk by `app_id`
     pub fn remove(&mut self, app_id: &str) {
         let Some(i) = self
@@ -203,7 +201,17 @@ impl ProfilesStore {
         let _ = std::fs::remove_file(&path);
         self.list.remove(i);
     }
-
+    // Returns the profile assigned to given app,
+    pub fn active_for(&self, app_id: &str) -> Option<&Profile> {
+        self.list
+            .iter()
+            .find(|p| p.app_id.eq_ignore_ascii_case(app_id))
+            .or_else(|| {
+                self.list
+                    .iter()
+                    .find(|p| p.app_id.eq_ignore_ascii_case(DEFAULT_APP_ID))
+            })
+    }
     fn profile_path(&self, app_id: &str) -> PathBuf {
         self.dir.join(format!("{}.json", app_id.to_lowercase()))
     }
