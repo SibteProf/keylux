@@ -20,7 +20,7 @@ use crate::profiles::{window_focus, ProfilesStore};
 
 /// Directly affects the profile switching delay.
 /// Lowering it makes the switch feel snappier;
-/// raising it is gentler on a laptop battery. 
+/// raising it is gentler on a laptop battery.
 /// 250 ms was chosen by feel, and is not a hard limit.
 const POLL_INTERVAL: Duration = Duration::from_millis(250);
 
