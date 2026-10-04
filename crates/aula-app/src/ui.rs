@@ -809,11 +809,16 @@ impl App {
                 });
             // -- Send frames to engine --
             // From draft if editing, otherwise from current profile
-            let active_effect_id = &current_profile.effect_id;
-            if let Some(idx) = effects.iter().position(|e| &e.meta.id == active_effect_id) {
-                if self.selected != idx {
-                    self.selected = idx;
-                    self.engine.send(Cmd::SelectEffect(idx));
+            // Do not send frames if keylux is not in focus to avoid
+            // overriding the effect
+            let window_focused = ui.ctx().input(|i| i.viewport().focused).unwrap_or(false);
+            if window_focused {
+                let active_effect_id = &current_profile.effect_id;
+                if let Some(idx) = effects.iter().position(|e| &e.meta.id == active_effect_id) {
+                    if self.selected != idx {
+                        self.selected = idx;
+                        self.engine.send(Cmd::SelectEffect(idx));
+                    }
                 }
             }
         }
