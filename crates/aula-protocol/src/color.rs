@@ -1,7 +1,9 @@
 //! Colour type and helpers.
 
+use serde::{Deserialize, Serialize};
+
 /// An 8-bit-per-channel colour.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Rgb {
     pub r: u8,
     pub g: u8,

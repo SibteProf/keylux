@@ -664,6 +664,19 @@ impl App {
                     if profile_selection != self.selected_profile {
                         self.selected_profile = profile_selection;
                         self.profile_draft = None;
+
+                        // Send the new profile's params to the engine. The effect id change
+                        // is handled below; params are not.
+                        if let Some(p) = self
+                            .profiles
+                            .lock()
+                            .unwrap()
+                            .list
+                            .iter()
+                            .find(|p| p.app_id.eq_ignore_ascii_case(&self.selected_profile))
+                        {
+                            self.engine.send(Cmd::SetParams(p.params.clone()));
+                        }
                     }
                     // Create new profile from the default, set the `name`
                     // of the profile to something neutral and clear the `app_id`
@@ -807,14 +820,43 @@ impl App {
                         });
                     ui.end_row();
                 });
+            // -- Effect parameters --
+            if let Some(effect) = effects
+                .iter()
+                .find(|e| e.meta.id == current_profile.effect_id)
+            {
+                if !effect.meta.params.is_empty() {
+                    ui.add_space(8.0);
+                    ui.separator();
+                    ui.label(egui::RichText::new("Effect parameters").strong());
+
+                    let mut p = current_profile.params.clone();
+                    if params_grid(ui, "profile-params", effect, &mut p) {
+                        // Send straight to the engine — the "Send frames" block below
+                        // only handles effect id changes, and a slider move does not
+                        // change the id.
+                        self.engine.send(Cmd::SetParams(p.clone()));
+
+                        // Keep the change in the draft for Save.
+                        let mut d = self
+                            .profile_draft
+                            .take()
+                            .unwrap_or_else(|| current_profile.clone());
+                        d.params = p;
+                        self.profile_draft = Some(d);
+                    }
+                }
+            }
+
             // -- Send frames to engine --
-            // From draft if editing, otherwise from current profile
             // Do not send frames if keylux is not in focus to avoid
             // overriding the effect
             let window_focused = ui.ctx().input(|i| i.viewport().focused).unwrap_or(false);
             if window_focused {
-                let active_effect_id = &current_profile.effect_id;
-                if let Some(idx) = effects.iter().position(|e| &e.meta.id == active_effect_id) {
+                if let Some(idx) = effects
+                    .iter()
+                    .position(|e| e.meta.id == current_profile.effect_id)
+                {
                     if self.selected != idx {
                         self.selected = idx;
                         self.engine.send(Cmd::SelectEffect(idx));
@@ -823,75 +865,84 @@ impl App {
             }
         }
     }
-    
-    fn params_grid(&mut self, ui: &mut egui::Ui, effect: &crate::engine::EffectInfo) -> bool {
-        let mut changed = false;
-        egui::Grid::new("params")
-            .num_columns(2)
-            .spacing([12.0, 8.0])
-            .show(ui, |ui| {
-                for spec in &effect.meta.params {
-                    ui.label(&spec.label);
-                    match &spec.kind {
-                        ParamKind::Float { min, max, default } => {
-                            let mut v = self.params.float(&spec.id, *default);
-                            if ui.add(egui::Slider::new(&mut v, *min..=*max)).changed() {
-                                self.params.set(&spec.id, Value::Float(v));
-                                changed = true;
-                            }
-                        }
-                        ParamKind::Int { min, max, default } => {
-                            let mut v = self.params.int(&spec.id, *default);
-                            if ui.add(egui::Slider::new(&mut v, *min..=*max)).changed() {
-                                self.params.set(&spec.id, Value::Int(v));
-                                changed = true;
-                            }
-                        }
-                        ParamKind::Bool { default } => {
-                            let mut v = self.params.bool(&spec.id, *default);
-                            if ui.checkbox(&mut v, "").changed() {
-                                self.params.set(&spec.id, Value::Bool(v));
-                                changed = true;
-                            }
-                        }
-                        ParamKind::Color { default } => {
-                            let c = self.params.color(&spec.id, *default);
-                            let mut rgb = [c.r, c.g, c.b];
-                            if ui.color_edit_button_srgb(&mut rgb).changed() {
-                                self.params.set(
-                                    &spec.id,
-                                    Value::Color(Rgb::new(rgb[0], rgb[1], rgb[2])),
-                                );
-                                changed = true;
-                            }
-                        }
-                        ParamKind::Text { default } => {
-                            let mut v = self.params.text(&spec.id, default);
-                            if ui.text_edit_singleline(&mut v).changed() {
-                                self.params.set(&spec.id, Value::Text(v));
-                                changed = true;
-                            }
-                        }
-                        ParamKind::Choice { options, default } => {
-                            let cur = self.params.int(&spec.id, *default as i64) as usize;
-                            let text = options.get(cur).cloned().unwrap_or_default();
-                            egui::ComboBox::from_id_salt(&spec.id)
-                                .selected_text(text)
-                                .show_ui(ui, |ui| {
-                                    for (i, opt) in options.iter().enumerate() {
-                                        if ui.selectable_label(i == cur, opt).clicked() {
-                                            self.params.set(&spec.id, Value::Int(i as i64));
-                                            changed = true;
-                                        }
-                                    }
-                                });
+}
+
+/// Draw the parameter controls for one effect into `params`.
+///
+/// Used by both the Play tab and the profile form: both edit the same
+/// `Params` against the same `EffectMeta`. `grid_id` differs so the two
+/// can be open at the same time without egui confusing their state.
+///
+/// Returns `true` if the user changed anything this frame.
+fn params_grid(
+    ui: &mut egui::Ui,
+    grid_name: &str,
+    effect: &crate::engine::EffectInfo,
+    params: &mut Params,
+) -> bool {
+    let mut changed = false;
+    egui::Grid::new(grid_name)
+        .num_columns(2)
+        .spacing([12.0, 8.0])
+        .show(ui, |ui| {
+            for spec in &effect.meta.params {
+                ui.label(&spec.label);
+                match &spec.kind {
+                    ParamKind::Float { min, max, default } => {
+                        let mut v = params.float(&spec.id, *default);
+                        if ui.add(egui::Slider::new(&mut v, *min..=*max)).changed() {
+                            params.set(&spec.id, Value::Float(v));
+                            changed = true;
                         }
                     }
-                    ui.end_row();
+                    ParamKind::Int { min, max, default } => {
+                        let mut v = params.int(&spec.id, *default);
+                        if ui.add(egui::Slider::new(&mut v, *min..=*max)).changed() {
+                            params.set(&spec.id, Value::Int(v));
+                            changed = true;
+                        }
+                    }
+                    ParamKind::Bool { default } => {
+                        let mut v = params.bool(&spec.id, *default);
+                        if ui.checkbox(&mut v, "").changed() {
+                            params.set(&spec.id, Value::Bool(v));
+                            changed = true;
+                        }
+                    }
+                    ParamKind::Color { default } => {
+                        let c = params.color(&spec.id, *default);
+                        let mut rgb = [c.r, c.g, c.b];
+                        if ui.color_edit_button_srgb(&mut rgb).changed() {
+                            params.set(&spec.id, Value::Color(Rgb::new(rgb[0], rgb[1], rgb[2])));
+                            changed = true;
+                        }
+                    }
+                    ParamKind::Text { default } => {
+                        let mut v = params.text(&spec.id, default);
+                        if ui.text_edit_singleline(&mut v).changed() {
+                            params.set(&spec.id, Value::Text(v));
+                            changed = true;
+                        }
+                    }
+                    ParamKind::Choice { options, default } => {
+                        let cur = params.int(&spec.id, *default as i64) as usize;
+                        let text = options.get(cur).cloned().unwrap_or_default();
+                        egui::ComboBox::from_id_salt(&spec.id)
+                            .selected_text(text)
+                            .show_ui(ui, |ui| {
+                                for (i, opt) in options.iter().enumerate() {
+                                    if ui.selectable_label(i == cur, opt).clicked() {
+                                        params.set(&spec.id, Value::Int(i as i64));
+                                        changed = true;
+                                    }
+                                }
+                            });
+                    }
                 }
-            });
-        changed
-    }
+                ui.end_row();
+            }
+        });
+    changed
 }
 
 fn open_folder(path: &std::path::Path) {
@@ -1280,9 +1331,11 @@ impl eframe::App for App {
             }
             ui.add_space(4.0);
 
-            let changed = self.params_grid(ui, effect);
+            let mut changed = false;
 
-            if effect.meta.params.is_empty() {
+            if !effect.meta.params.is_empty() {
+                changed = params_grid(ui, "params", effect, &mut self.params);
+            } else {
                 ui.weak("This effect has no parameters.");
             }
 

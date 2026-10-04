@@ -10,6 +10,7 @@ authors.workspace = true
 
 [dependencies]
 hidapi.workspace = true
+serde.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]

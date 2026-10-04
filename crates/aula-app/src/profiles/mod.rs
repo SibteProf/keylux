@@ -21,6 +21,7 @@
 
 use std::path::PathBuf;
 
+use aula_effects::Params;
 use serde::{Deserialize, Serialize};
 
 pub mod ticker;
@@ -64,6 +65,8 @@ pub struct Profile {
     pub app_id: String,
     /// The effect to render, by its registry id (not an index, but id)
     pub effect_id: String,
+    #[serde(default)]
+    pub params: Params,
 }
 /// Default profile.
 impl Default for Profile {
@@ -72,6 +75,7 @@ impl Default for Profile {
             name: String::from("Default"),
             app_id: DEFAULT_APP_ID.to_string(),
             effect_id: "solid".to_string(),
+            params: Params::default(),
         }
     }
 }
@@ -257,6 +261,7 @@ mod tests {
                 name: "Firefox".into(),
                 app_id: "firefox".into(),
                 effect_id: "wave".into(),
+                params: Params::default(),
             },
         );
 
@@ -307,6 +312,7 @@ mod tests {
                 name: "Firefox".into(),
                 app_id: "firefox".into(),
                 effect_id: "wave".into(),
+                params: Params::default(),
             },
         );
 
@@ -359,6 +365,7 @@ mod tests {
                 name: "Firefox".into(),
                 app_id: "firefox".into(),
                 effect_id: "wave".into(),
+                params: Params::default(),
             },
         );
 

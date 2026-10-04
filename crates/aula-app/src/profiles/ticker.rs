@@ -55,25 +55,28 @@ impl ProfilesTicker {
                     if app_in_focus == active {
                         continue;
                     }
-                    // Look up the effect assignet to profile.
+                    // Look up the effect and parameters
+                    // assigned to profile.
                     // Hold the profile only for the lookup,
                     // not for the send.
-                    let effect_id = {
+                    let profile = {
                         let store = profiles.lock().unwrap();
                         active
                             .as_deref()
                             .and_then(|app| store.active_for(app))
-                            .map(|p| p.effect_id.clone())
+                            .cloned()
                     };
-                    if let Some(effect_id) = effect_id {
+
+                    if let Some(profile) = profile {
                         let idx = shared
                             .lock()
                             .unwrap()
                             .effects
                             .iter()
-                            .position(|e| e.meta.id == effect_id);
+                            .position(|e| e.meta.id == profile.effect_id);
                         if let Some(idx) = idx {
                             let _ = send.send(Cmd::SelectEffect(idx));
+                            let _ = send.send(Cmd::SetParams(profile.params.clone()));
                         }
                     }
                     app_in_focus = active;

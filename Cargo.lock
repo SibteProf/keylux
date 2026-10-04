@@ -357,6 +357,7 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "hidapi",
+ "serde",
  "thiserror 2.0.20",
 ]
 

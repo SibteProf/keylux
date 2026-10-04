@@ -8,6 +8,7 @@
 use std::collections::HashMap;
 
 use aula_protocol::Rgb;
+use serde::{Deserialize, Serialize};
 
 /// The kind of control a parameter needs, plus its bounds and default.
 #[derive(Clone, Debug, PartialEq)]
@@ -94,7 +95,7 @@ impl ParamSpec {
 }
 
 /// A parameter value.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Value {
     Float(f32),
     Int(i64),
@@ -109,7 +110,7 @@ pub enum Value {
 /// Lookups never fail: an unknown or mistyped key returns the caller's
 /// fallback. Effects are frequently user scripts, and a typo should degrade
 /// gracefully rather than panic mid-animation.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct Params {
     values: HashMap<String, Value>,
 }
