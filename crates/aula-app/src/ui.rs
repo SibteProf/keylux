@@ -823,6 +823,75 @@ impl App {
             }
         }
     }
+    
+    fn params_grid(&mut self, ui: &mut egui::Ui, effect: &crate::engine::EffectInfo) -> bool {
+        let mut changed = false;
+        egui::Grid::new("params")
+            .num_columns(2)
+            .spacing([12.0, 8.0])
+            .show(ui, |ui| {
+                for spec in &effect.meta.params {
+                    ui.label(&spec.label);
+                    match &spec.kind {
+                        ParamKind::Float { min, max, default } => {
+                            let mut v = self.params.float(&spec.id, *default);
+                            if ui.add(egui::Slider::new(&mut v, *min..=*max)).changed() {
+                                self.params.set(&spec.id, Value::Float(v));
+                                changed = true;
+                            }
+                        }
+                        ParamKind::Int { min, max, default } => {
+                            let mut v = self.params.int(&spec.id, *default);
+                            if ui.add(egui::Slider::new(&mut v, *min..=*max)).changed() {
+                                self.params.set(&spec.id, Value::Int(v));
+                                changed = true;
+                            }
+                        }
+                        ParamKind::Bool { default } => {
+                            let mut v = self.params.bool(&spec.id, *default);
+                            if ui.checkbox(&mut v, "").changed() {
+                                self.params.set(&spec.id, Value::Bool(v));
+                                changed = true;
+                            }
+                        }
+                        ParamKind::Color { default } => {
+                            let c = self.params.color(&spec.id, *default);
+                            let mut rgb = [c.r, c.g, c.b];
+                            if ui.color_edit_button_srgb(&mut rgb).changed() {
+                                self.params.set(
+                                    &spec.id,
+                                    Value::Color(Rgb::new(rgb[0], rgb[1], rgb[2])),
+                                );
+                                changed = true;
+                            }
+                        }
+                        ParamKind::Text { default } => {
+                            let mut v = self.params.text(&spec.id, default);
+                            if ui.text_edit_singleline(&mut v).changed() {
+                                self.params.set(&spec.id, Value::Text(v));
+                                changed = true;
+                            }
+                        }
+                        ParamKind::Choice { options, default } => {
+                            let cur = self.params.int(&spec.id, *default as i64) as usize;
+                            let text = options.get(cur).cloned().unwrap_or_default();
+                            egui::ComboBox::from_id_salt(&spec.id)
+                                .selected_text(text)
+                                .show_ui(ui, |ui| {
+                                    for (i, opt) in options.iter().enumerate() {
+                                        if ui.selectable_label(i == cur, opt).clicked() {
+                                            self.params.set(&spec.id, Value::Int(i as i64));
+                                            changed = true;
+                                        }
+                                    }
+                                });
+                        }
+                    }
+                    ui.end_row();
+                }
+            });
+        changed
+    }
 }
 
 fn open_folder(path: &std::path::Path) {
@@ -1211,71 +1280,7 @@ impl eframe::App for App {
             }
             ui.add_space(4.0);
 
-            let mut changed = false;
-            egui::Grid::new("params")
-                .num_columns(2)
-                .spacing([12.0, 8.0])
-                .show(ui, |ui| {
-                    for spec in &effect.meta.params {
-                        ui.label(&spec.label);
-                        match &spec.kind {
-                            ParamKind::Float { min, max, default } => {
-                                let mut v = self.params.float(&spec.id, *default);
-                                if ui.add(egui::Slider::new(&mut v, *min..=*max)).changed() {
-                                    self.params.set(&spec.id, Value::Float(v));
-                                    changed = true;
-                                }
-                            }
-                            ParamKind::Int { min, max, default } => {
-                                let mut v = self.params.int(&spec.id, *default);
-                                if ui.add(egui::Slider::new(&mut v, *min..=*max)).changed() {
-                                    self.params.set(&spec.id, Value::Int(v));
-                                    changed = true;
-                                }
-                            }
-                            ParamKind::Bool { default } => {
-                                let mut v = self.params.bool(&spec.id, *default);
-                                if ui.checkbox(&mut v, "").changed() {
-                                    self.params.set(&spec.id, Value::Bool(v));
-                                    changed = true;
-                                }
-                            }
-                            ParamKind::Color { default } => {
-                                let c = self.params.color(&spec.id, *default);
-                                let mut rgb = [c.r, c.g, c.b];
-                                if ui.color_edit_button_srgb(&mut rgb).changed() {
-                                    self.params.set(
-                                        &spec.id,
-                                        Value::Color(Rgb::new(rgb[0], rgb[1], rgb[2])),
-                                    );
-                                    changed = true;
-                                }
-                            }
-                            ParamKind::Text { default } => {
-                                let mut v = self.params.text(&spec.id, default);
-                                if ui.text_edit_singleline(&mut v).changed() {
-                                    self.params.set(&spec.id, Value::Text(v));
-                                    changed = true;
-                                }
-                            }
-                            ParamKind::Choice { options, default } => {
-                                let cur = self.params.int(&spec.id, *default as i64) as usize;
-                                let text = options.get(cur).cloned().unwrap_or_default();
-                                egui::ComboBox::from_id_salt(&spec.id)
-                                    .selected_text(text)
-                                    .show_ui(ui, |ui| {
-                                        for (i, opt) in options.iter().enumerate() {
-                                            if ui.selectable_label(i == cur, opt).clicked() {
-                                                self.params.set(&spec.id, Value::Int(i as i64));
-                                                changed = true;
-                                            }
-                                        }
-                                    });
-                            }
-                        }
-                        ui.end_row();
-                    }
-                });
+            let changed = self.params_grid(ui, effect);
 
             if effect.meta.params.is_empty() {
                 ui.weak("This effect has no parameters.");
