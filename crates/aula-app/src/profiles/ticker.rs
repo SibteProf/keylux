@@ -3,6 +3,10 @@
 //! The tick lives in its own thread rather than in `App::update` because a
 //! hidden egui window is never asked to paint — `update` stops running, and
 //! a profile would only switch while the user was looking at the app.
+//!
+//! It looks up the effect index through `Shared`, the same list the UI
+//! shows, because `Cmd::SelectEffect` takes an index and the profile stores
+//! an id.
 
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -15,6 +19,9 @@ use crate::engine::{Cmd, Shared};
 use crate::profiles::{window_focus, ProfilesStore};
 
 /// Directly affects the profile switching delay.
+/// Lowering it makes the switch feel snappier;
+/// raising it is gentler on a laptop battery. 
+/// 250 ms was chosen by feel, and is not a hard limit.
 const POLL_INTERVAL: Duration = Duration::from_millis(250);
 
 pub struct ProfilesTicker {
@@ -35,7 +42,6 @@ impl ProfilesTicker {
     ) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
         let stop_thread = Arc::clone(&stop);
-
         let handle = std::thread::Builder::new()
             .name("aula-profiles".into())
             .spawn(move || {
@@ -70,8 +76,7 @@ impl ProfilesTicker {
                             let _ = send.send(Cmd::SelectEffect(idx));
                         }
                     }
-
-                    app_in_focus = active
+                    app_in_focus = active;
                 }
             })
             .expect("spawn profiles ticker");
