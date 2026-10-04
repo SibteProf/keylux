@@ -216,3 +216,164 @@ impl ProfilesStore {
         self.dir.join(format!("{}.json", app_id.to_lowercase()))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A fresh directory per test, cleaned first so a rerun starts from
+    /// nothing. Left behind on purpose: `$TMPDIR` is cleaned by the system,
+    /// and removing in a `Drop` would skip the cleanup whenever a test
+    /// panics — which is exactly when the files are worth having.
+    fn test_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("keylux-profiles-{name}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// A new profile must not remove the one that was selected before it.
+    ///
+    /// An earlier version passed `Some(selected)` as `old_app_id` on every
+    /// save, so creating a profile from `Default` deleted `default.json` and
+    /// the fallback vanished. The fix was to pass `None` when the profile is
+    /// new, and this guards that.
+    #[test]
+    fn saving_a_new_profile_does_not_remove_the_previous_one() {
+        let dir = test_dir("new-does-not-remove-previous");
+        let mut store = ProfilesStore::load(dir);
+
+        assert!(
+            store
+                .list
+                .iter()
+                .any(|p| p.app_id.eq_ignore_ascii_case(DEFAULT_APP_ID)),
+            "load must seed the fallback"
+        );
+
+        store.save(
+            None,
+            Profile {
+                name: "Firefox".into(),
+                app_id: "firefox".into(),
+                effect_id: "wave".into(),
+            },
+        );
+
+        assert!(
+            store
+                .list
+                .iter()
+                .any(|p| p.app_id.eq_ignore_ascii_case(DEFAULT_APP_ID)),
+            "saving a new profile removed the fallback"
+        );
+        assert!(
+            store
+                .list
+                .iter()
+                .any(|p| p.app_id.eq_ignore_ascii_case("firefox")),
+            "the new profile was not added"
+        );
+    }
+
+    /// `load` must leave a fallback in place even when the directory starts
+    /// empty. Everything else — the UI default selection, `active_for`'s
+    /// fallback branch — assumes it is there.
+    #[test]
+    fn load_creates_the_fallback_in_an_empty_directory() {
+        let dir = test_dir("fallback-created");
+        let store = ProfilesStore::load(dir);
+
+        let fallback = store
+            .list
+            .iter()
+            .find(|p| p.app_id.eq_ignore_ascii_case(DEFAULT_APP_ID));
+        assert!(fallback.is_some(), "no fallback after load");
+        assert!(
+            !fallback.unwrap().effect_id.is_empty(),
+            "fallback has no effect"
+        );
+    }
+
+    /// An application with no profile of its own falls back to `Default`.
+    /// That is what makes the fallback useful: something always renders.
+    #[test]
+    fn active_for_falls_back_to_default() {
+        let dir = test_dir("active-for-fallback");
+        let mut store = ProfilesStore::load(dir);
+        store.save(
+            None,
+            Profile {
+                name: "Firefox".into(),
+                app_id: "firefox".into(),
+                effect_id: "wave".into(),
+            },
+        );
+
+        let exact = store.active_for("firefox").unwrap();
+        assert_eq!(exact.effect_id, "wave");
+
+        let fallback = store.active_for("something-else").unwrap();
+        assert_eq!(fallback.app_id.to_lowercase(), DEFAULT_APP_ID);
+    }
+
+    /// A hand-edited profile with a typo costs that file, not the rest of
+    /// the directory.
+    #[test]
+    fn a_corrupt_file_is_skipped_without_losing_the_others() {
+        let dir = test_dir("corrupt-file");
+        std::fs::write(dir.join("broken.json"), "{ not json").unwrap();
+        std::fs::write(
+            dir.join("firefox.json"),
+            r#"{"name":"Firefox","app_id":"firefox","effect_id":"wave"}"#,
+        )
+        .unwrap();
+
+        let store = ProfilesStore::load(dir);
+
+        assert!(
+            store
+                .list
+                .iter()
+                .any(|p| p.app_id.eq_ignore_ascii_case("firefox")),
+            "the valid profile was dropped along with the corrupt one"
+        );
+        assert!(
+            store
+                .list
+                .iter()
+                .any(|p| p.app_id.eq_ignore_ascii_case(DEFAULT_APP_ID)),
+            "the fallback must still be seeded"
+        );
+    }
+
+    /// Removing a profile deletes its file. A row that vanishes from the list
+    /// but stays on disk comes back on the next start.
+    #[test]
+    fn remove_deletes_the_file() {
+        let dir = test_dir("remove-deletes-file");
+        let mut store = ProfilesStore::load(dir.clone());
+        store.save(
+            None,
+            Profile {
+                name: "Firefox".into(),
+                app_id: "firefox".into(),
+                effect_id: "wave".into(),
+            },
+        );
+
+        let path = dir.join("firefox.json");
+        assert!(path.exists(), "save did not write the file");
+
+        store.remove("firefox");
+
+        assert!(!path.exists(), "remove left the file on disk");
+        assert!(
+            !store
+                .list
+                .iter()
+                .any(|p| p.app_id.eq_ignore_ascii_case("firefox")),
+            "remove left the profile in the list"
+        );
+    }
+}
