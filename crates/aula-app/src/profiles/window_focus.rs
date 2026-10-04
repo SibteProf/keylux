@@ -1,14 +1,10 @@
-//! Which application is in focus, and which could be.
+//! Linux goes through X11: `_NET_ACTIVE_WINDOW` for the focused window,
+//! `_NET_CLIENT_LIST` for the picker's list. Wayland is not supported —
+//! a client cannot ask the compositor which surface has focus.
 //!
-//! The real implementations live in per-platform branches: Linux through
-//! X11 (`_NET_ACTIVE_WINDOW` and `_NET_CLIENT_LIST`), Windows through
-//! `GetForegroundWindow` and `EnumWindows`, macOS through `NSWorkspace`.
-
-/// The application that currently has focus, as the platform reports it.
-///
-/// This is the string `Profile.app_id` is matched against — `WM_CLASS` on
-/// Linux, the executable's basename on Windows, the bundle identifier on
-/// macOS. `None` means the platform cannot say, or nothing has focus.
+//! Windows goes through `GetForegroundWindow` and `EnumWindows`, and
+//! reports the executable's basename. macOS is not implemented: it returns
+//! `None` and `available()` says no, so the Profiles tab is hidden.
 pub fn active_process_name() -> Option<String> {
     #[cfg(target_os = "linux")]
     return linux_active();
@@ -19,7 +15,9 @@ pub fn active_process_name() -> Option<String> {
 }
 /// Get active window on Linux with X11.
 ///
-/// Wayland is not supported.
+/// Wayland is not supported: the protocol does not expose the focused
+/// window to clients, by design — a client must not know what is happening
+/// in other applications' windows.
 #[cfg(target_os = "linux")]
 fn linux_active() -> Option<String> {
     use x11rb::connection::Connection;
