@@ -3,11 +3,6 @@
 //! The real implementations live in per-platform branches: Linux through
 //! X11 (`_NET_ACTIVE_WINDOW` and `_NET_CLIENT_LIST`), Windows through
 //! `GetForegroundWindow` and `EnumWindows`, macOS through `NSWorkspace`.
-//!
-//! This is the stub that fixes the interface. `core` builds and runs with
-//! it — the profile editor works, the watcher polls, and nothing happens,
-//! because nothing can be determined. A platform branch replaces this file
-//! and the rest of the app does not change.
 
 /// The application that currently has focus, as the platform reports it.
 ///
@@ -17,7 +12,9 @@
 pub fn active_process_name() -> Option<String> {
     #[cfg(target_os = "linux")]
     return linux_active();
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "windows")]
+    return windows_active();
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
     None
 }
 /// Get active window on Linux with X11.
@@ -51,16 +48,25 @@ fn linux_active() -> Option<String> {
     let class = linux_get_class(&conn, id)?;
     Some(class)
 }
+/// Get active window on Windows.
+#[cfg(target_os = "windows")]
+fn windows_active() -> Option<String> {
+    use windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+
+    let hwnd = unsafe { GetForegroundWindow() };
+    if hwnd.is_null() {
+        return None;
+    }
+    windows_process_name(hwnd)
+}
 // Get list of launched apps
 pub fn list_windows() -> Vec<String> {
     #[cfg(target_os = "linux")]
-    {
-        linux_app_list()
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        Vec::new()
-    }
+    return linux_app_list();
+    #[cfg(target_os = "windows")]
+    return windows_app_list();
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    return Vec::new();
 }
 /// Get list of windows on Linux with X11.
 ///
@@ -107,6 +113,50 @@ fn linux_app_list() -> Vec<String> {
     classes.dedup();
     classes
 }
+/// Get list of apps on Windows.
+#[cfg(target_os = "windows")]
+fn windows_app_list() -> Vec<String> {
+    use windows_sys::Win32::Foundation::{BOOL, HWND, LPARAM, TRUE};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        EnumWindows, GetWindowTextLengthW, IsWindowVisible,
+    };
+
+    // The callback receives the `LPARAM` we passed to `EnumWindows` and a
+    // window handle. We use it to push the handle into a `Vec<HWND>` living
+    // on the caller's stack.
+    unsafe extern "system" fn collect(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        let windows = &mut *(lparam as *mut Vec<HWND>);
+        windows.push(hwnd);
+        TRUE
+    }
+
+    let mut handles: Vec<HWND> = Vec::new();
+    unsafe {
+        EnumWindows(Some(collect), &mut handles as *mut _ as LPARAM);
+    }
+
+    let mut classes: Vec<String> = Vec::new();
+    for hwnd in handles {
+        unsafe {
+            if IsWindowVisible(hwnd) == 0 {
+                continue;
+            }
+            // Windows with no title are usually invisible helpers: the
+            // IME window, hidden message-only windows, tray icon hosts.
+            // Filtering by title is the cheap way to skip them.
+            if GetWindowTextLengthW(hwnd) == 0 {
+                continue;
+            }
+        }
+        if let Some(name) = windows_process_name(hwnd) {
+            classes.push(name);
+        }
+    }
+
+    classes.sort();
+    classes.dedup();
+    classes
+}
 /// Whether this build can currently report the focused application.
 ///
 /// Not "does the platform support it" — Linux with X11 can, and so can
@@ -125,8 +175,10 @@ pub fn available() -> bool {
         Ok("wayland") => false,
         _ => std::env::var("DISPLAY").is_ok(),
     };
-    #[cfg(not(target_os = "linux"))]
-    false
+    #[cfg(target_os = "windows")]
+    return true;
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    return false;
 }
 #[cfg(target_os = "linux")]
 fn linux_get_class(conn: &impl x11rb::connection::Connection, window: u32) -> Option<String> {
@@ -146,4 +198,43 @@ fn linux_get_class(conn: &impl x11rb::connection::Connection, window: u32) -> Op
     let _instance = parts.next().filter(|p| !p.is_empty())?;
     let class = parts.next().filter(|p| !p.is_empty())?;
     std::str::from_utf8(class).ok().map(str::to_string)
+}
+#[cfg(target_os = "windows")]
+fn windows_process_name(hwnd: windows_sys::Win32::Foundation::HWND) -> Option<String> {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    use windows_sys::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId;
+
+    unsafe {
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(hwnd, &mut pid);
+        if pid == 0 {
+            return None;
+        }
+
+        // PROCESS_QUERY_LIMITED_INFORMATION is enough to read the image name
+        // and does not require elevation for most process. Protected
+        // processes (system, DWM, anti-cheats, anti-malware) still fall -
+        // that is expected and they return `None`.
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() {
+            return None;
+        }
+
+        let mut buf = [0u16; 1024];
+        let mut len = buf.len() as u32;
+        let ok = QueryFullProcessImageNameW(handle, 0, buf.as_mut_ptr(), &mut len);
+        CloseHandle(handle);
+
+        if ok == 0 {
+            return None;
+        }
+
+        let path = String::from_utf16_lossy(&buf[..len as usize]);
+        std::path::Path::new(&path)
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+    }
 }
