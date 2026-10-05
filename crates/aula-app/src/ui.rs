@@ -606,6 +606,7 @@ impl App {
             // avoid checking the `Option` via `.is_some` repeatedly
             // inside the UI closures.
             let is_editing = self.profile_draft.is_some();
+            let mut profile_switched = false;
             // The `app_id` before editing. If user want to change
             // `app_id` of existing profile, will create a new
             // profile and remove old profile to avoid duplicates.
@@ -664,9 +665,8 @@ impl App {
                     if profile_selection != self.selected_profile {
                         self.selected_profile = profile_selection;
                         self.profile_draft = None;
+                        profile_switched = true;
 
-                        // Send the new profile's params to the engine. The effect id change
-                        // is handled below; params are not.
                         if let Some(p) = self
                             .profiles
                             .lock()
@@ -674,8 +674,18 @@ impl App {
                             .list
                             .iter()
                             .find(|p| p.app_id.eq_ignore_ascii_case(&self.selected_profile))
+                            .cloned()
                         {
-                            self.engine.send(Cmd::SetParams(p.params.clone()));
+                            // Effect first — SelectEffect resets params, so params go second.
+                            if let Some(idx) = effects.iter().position(|e| e.meta.id == p.effect_id)
+                            {
+                                if self.selected != idx {
+                                    self.selected = idx;
+                                    self.engine.send(Cmd::SelectEffect(idx));
+                                }
+                                self.engine.send(Cmd::SetParams(p.params.clone()));
+                            }
+                            self.params = p.params.clone();
                         }
                     }
                     // Create new profile from the default, set the `name`
@@ -795,7 +805,6 @@ impl App {
                     );
                     ui.end_row();
                     // -- Effect selector --
-                    // TODO: Effect parameters
                     ui.label("Effect");
                     let draft_ref = &mut self.profile_draft;
                     let mut effect_buf = current_profile.effect_id.clone();
@@ -851,8 +860,10 @@ impl App {
             // -- Send frames to engine --
             // Do not send frames if keylux is not in focus to avoid
             // overriding the effect
+            // This block works only if profile not switched -
+            // only if `effect_id` changed
             let window_focused = ui.ctx().input(|i| i.viewport().focused).unwrap_or(false);
-            if window_focused {
+            if window_focused && !profile_switched {
                 if let Some(idx) = effects
                     .iter()
                     .position(|e| e.meta.id == current_profile.effect_id)
@@ -997,7 +1008,7 @@ impl eframe::App for App {
         self.close_dialog(ctx, running);
 
         // First frame, or the engine changed selection (e.g. after a rescan).
-        if self.selected == usize::MAX || self.selected != engine_sel {
+        if self.selected == usize::MAX || self.selected != engine_sel && self.tab == Tab::Play {
             self.selected = engine_sel.min(effects.len().saturating_sub(1));
             if let Some(e) = effects.get(self.selected) {
                 self.params = Params::from_specs(&e.meta.params);
