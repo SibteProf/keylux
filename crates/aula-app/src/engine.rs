@@ -492,8 +492,9 @@ fn run(
                         };
                     }
                     None => {
+                        let warning = shared.lock().unwrap().discovery_warnings.first().cloned();
                         shared.lock().unwrap().status = DeviceStatus::Disconnected(
-                            "No keyboard found. Connect an AULA F75, or start OpenRGB's SDK server for other models. See Settings for scan details.".into());
+                            warning.unwrap_or_else(|| "No compatible keyboard found. Connect a supported AULA F75, or start OpenRGB's SDK server for other models. See Settings for scan details.".into()));
                     }
                 }
             }

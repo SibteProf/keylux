@@ -1,5 +1,10 @@
 # keylux
 
+**AULA F75 Wired `1a2c:9407`:** Keylux recognizes this reported variant, but
+per-key lighting and animations are not supported yet. See
+[the diagnostic guide](docs/F75-WIRED.md) and run
+`keylux diagnose --device 1a2c:9407 --output f75-wired-diagnostics.txt`.
+
 Open-source per-key RGB control for mechanical keyboards, written in Rust.
 Native **AULA F75** support plus an **OpenRGB SDK backend** for Corsair, Razer,
 ASUS, Logitech, HyperX, SteelSeries, and other compatible keyboards.
