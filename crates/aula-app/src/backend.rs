@@ -72,6 +72,7 @@ pub struct DiscoveryCache {
     signature: Option<Vec<String>>,
     native: Vec<DeviceCandidate>,
     native_warning: Option<String>,
+    unsupported_warnings: Vec<String>,
 }
 
 impl DiscoveryCache {
@@ -84,6 +85,8 @@ impl DiscoveryCache {
         let signature = aula_protocol::transport::enumeration_signature().ok();
         if force || signature.is_none() || signature != self.signature {
             self.signature = signature;
+            self.unsupported_warnings =
+                unsupported_warnings(&aula_protocol::transport::list_all().unwrap_or_default());
             match Keyboard::discover(opts) {
                 Ok(found) => {
                     self.native = found;
@@ -97,6 +100,7 @@ impl DiscoveryCache {
         }
         let mut candidates: Vec<_> = self.native.iter().cloned().map(Candidate::Native).collect();
         let mut warnings: Vec<_> = self.native_warning.iter().cloned().collect();
+        warnings.extend(self.unsupported_warnings.iter().cloned());
         append_openrgb(&mut candidates, &mut warnings, endpoint);
         candidates.sort_by_key(rank);
         Discovery {
@@ -104,6 +108,18 @@ impl DiscoveryCache {
             warnings,
         }
     }
+}
+
+fn unsupported_warnings(collections: &[aula_protocol::transport::CollectionInfo]) -> Vec<String> {
+    let mut warnings = Vec::new();
+    for collection in collections {
+        if let Some(reason) = aula_protocol::compatibility::unsupported_reason(collection.id) {
+            if !warnings.iter().any(|w| w == reason) {
+                warnings.push(reason.to_string());
+            }
+        }
+    }
+    warnings
 }
 
 fn append_openrgb(
@@ -263,6 +279,28 @@ mod tests {
             product: "Test keyboard".into(),
             confidence: aula_protocol::Confidence::Known,
         })
+    }
+
+    #[test]
+    fn unsupported_variant_warns_once_across_multiple_collections() {
+        use aula_protocol::transport::CollectionInfo;
+        let mut c = CollectionInfo {
+            id: aula_protocol::compatibility::F75_WIRED_UNVERIFIED,
+            path: String::new(),
+            usage_page: 1,
+            usage: 6,
+            interface: 0,
+            product: "USB Gaming Keyboard".into(),
+            manufacturer: String::new(),
+            release_number: 0x0111,
+        };
+        let warnings = unsupported_warnings(&[c.clone(), c.clone()]);
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("1a2c:9407"));
+        assert!(warnings[0].contains("not yet supported"));
+        c.id = aula_protocol::f75::protocol::WIRED;
+        assert!(unsupported_warnings(&[c]).is_empty());
+        assert!(unsupported_warnings(&[]).is_empty());
     }
 
     #[test]

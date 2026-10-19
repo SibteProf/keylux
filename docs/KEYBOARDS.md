@@ -16,6 +16,10 @@ LED colors, typing reliability, or firmware compatibility on absent hardware.
 
 ## Model targets
 
+The reported **AULA F75 Wired `1a2c:9407`** variant is recognized but its lighting
+protocol is **unsupported**. It is distinct from the native `258a:010c` model.
+See [diagnostics and the driver investigation](F75-WIRED.md) for issue #17.
+
 These 15 conventional mechanical RGB models cover premium, compact, wireless,
 and full-size choices across five brands. They include current flagships and
 established models still relevant to RGB control. Selection was informed by

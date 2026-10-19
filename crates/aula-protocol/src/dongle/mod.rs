@@ -129,6 +129,9 @@ pub struct Dongle {
 
 impl Dongle {
     pub fn open_candidate(c: &DeviceCandidate) -> Result<Self> {
+        if let Some(reason) = crate::compatibility::unsupported_reason(c.id) {
+            return Err(Error::UnsupportedHardware(reason));
+        }
         let io = Transport::open_path(&c.path, p::REPORT_ID, p::FRAME_LEN)?;
         let layout = keymap::layout();
         Ok(Self {
@@ -414,7 +417,10 @@ pub const KNOWN: &[DeviceId] = &[DeviceId::new(0x3554, 0xfa09)];
 /// unknown command to unknown hardware is exactly what `docs/PROTOCOL.md`
 /// forbids.
 pub fn discover(extra: &[DeviceId]) -> Result<Vec<DeviceCandidate>> {
-    let known = |id: DeviceId| KNOWN.contains(&id) || extra.contains(&id);
+    let known = |id: DeviceId| {
+        crate::compatibility::unsupported_reason(id).is_none()
+            && (KNOWN.contains(&id) || extra.contains(&id))
+    };
     Ok(crate::transport::list_all()?
         .into_iter()
         .filter(|c| known(c.id) && c.usage_page == USAGE_PAGE_LIGHTING)

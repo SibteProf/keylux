@@ -322,7 +322,7 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
 name = "aula-app"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "aula-effects",
@@ -342,7 +342,7 @@ dependencies = [
 
 [[package]]
 name = "aula-effects"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "aula-protocol",
  "image",
@@ -354,7 +354,7 @@ dependencies = [
 
 [[package]]
 name = "aula-protocol"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "hidapi",
