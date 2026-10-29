@@ -81,6 +81,10 @@ pub struct Layer {
     pub opacity: f32,
     #[serde(default = "yes")]
     pub enabled: bool,
+    /// LED slots affected by this layer. None means every key (legacy files);
+    /// an empty list means no keys. Slots outside the output are ignored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keys: Option<Vec<usize>>,
 }
 
 fn one() -> f32 {
@@ -98,6 +102,7 @@ impl Layer {
             blend: Blend::default(),
             opacity: 1.0,
             enabled: true,
+            keys: None,
         }
     }
 
@@ -108,6 +113,23 @@ impl Layer {
             blend: Blend::default(),
             opacity: 1.0,
             enabled: true,
+            keys: None,
+        }
+    }
+
+    pub fn affects(&self, led: usize) -> bool {
+        self.keys.as_ref().map_or(true, |keys| keys.contains(&led))
+    }
+
+    /// Blend only selected keys; excluded keys are transparent in every mode.
+    fn composite(&self, src: &Frame, out: &mut Frame) {
+        for led in 0..out.len() {
+            if self.affects(led) {
+                out.set(
+                    led,
+                    blend_px(out.get(led), src.get(led), self.blend, self.opacity),
+                );
+            }
         }
     }
 }
@@ -180,10 +202,7 @@ impl Composition {
                     a.sample(t, &mut scratch);
                 }
             }
-            for led in 0..leds {
-                let mixed = blend_px(out.get(led), scratch.get(led), layer.blend, layer.opacity);
-                out.set(led, mixed);
-            }
+            layer.composite(&scratch, out);
         }
     }
 
@@ -317,10 +336,7 @@ impl Effect for CompositeEffect {
                     }
                 }
             }
-            for led in 0..leds {
-                let mixed = blend_px(out.get(led), scratch.get(led), layer.blend, layer.opacity);
-                out.set(led, mixed);
-            }
+            layer.composite(&scratch, out);
         }
 
         if brightness < 1.0 {
@@ -458,6 +474,86 @@ mod tests {
         comp.save(&path).unwrap();
         let back = Composition::load(&path).unwrap();
         assert_eq!(comp, back);
+    }
+
+    #[test]
+    fn masked_static_keys_stay_fixed_while_the_rest_animate() {
+        let leds = keymap::layout()
+            .iter()
+            .map(|key| key.led + 1)
+            .max()
+            .unwrap();
+        let mut comp = Composition::new("mixed", leds);
+        comp.layers = vec![Layer::generator(
+            "rainbow",
+            GenParams {
+                kind: Generator::Rainbow,
+                ..Default::default()
+            },
+        )];
+        let mut fixed = Layer::keyframes("fixed", solid_anim(leds, Rgb::new(255, 0, 0)));
+        fixed.keys = Some(vec![0, 2, usize::MAX]);
+        fixed.blend = Blend::Normal;
+        comp.layers.push(fixed);
+        let mut fx = CompositeEffect::new(comp.clone(), "mixed");
+        let a = render_at(&mut fx, 0.0);
+        let b = render_at(&mut fx, 0.7);
+        for led in [0, 2] {
+            assert_eq!(a.get(led), Rgb::new(255, 0, 0));
+            assert_eq!(a.get(led), b.get(led));
+        }
+        assert_ne!(a.get(1), b.get(1));
+        for t in [0.0, 0.7] {
+            let mut preview = Frame::black(leds);
+            comp.sample(t, &keymap::layout(), &mut preview);
+            assert_eq!(preview, render_at(&mut fx, t), "preview matches playback");
+        }
+        // Black is an intentional off colour on selected keys, not transparency.
+        if let LayerContent::Keyframes(anim) = &mut comp.layers[1].content {
+            *anim = solid_anim(leds, Rgb::BLACK);
+        }
+        let mut off = Frame::black(leds);
+        comp.sample(0.7, &keymap::layout(), &mut off);
+        assert!(off.get(0).is_black());
+        assert!(!off.get(1).is_black());
+    }
+
+    #[test]
+    fn excluded_keys_are_transparent_in_every_blend_mode() {
+        for blend in [
+            Blend::Normal,
+            Blend::Add,
+            Blend::Screen,
+            Blend::Multiply,
+            Blend::Max,
+        ] {
+            let mut layer = Layer::keyframes("masked", solid_anim(4, Rgb::BLACK));
+            layer.blend = blend;
+            layer.keys = Some(vec![1, 1, 999]);
+            let mut out = Frame::black(4);
+            out.fill(Rgb::new(80, 90, 100));
+            layer.composite(&Frame::black(4), &mut out);
+            assert_eq!(out.get(0), Rgb::new(80, 90, 100));
+            assert_eq!(out.get(2), Rgb::new(80, 90, 100));
+            layer.keys = Some(vec![]);
+            let before = out.clone();
+            layer.composite(&Frame::black(4), &mut out);
+            assert_eq!(before, out);
+        }
+    }
+
+    #[test]
+    fn masks_round_trip_and_legacy_layers_still_affect_all_keys() {
+        let mut layer = Layer::generator("g", GenParams::default());
+        let legacy = serde_json::to_string(&layer).unwrap();
+        assert!(!legacy.contains("\"keys\""));
+        let loaded: Layer = serde_json::from_str(&legacy).unwrap();
+        assert!(loaded.affects(42));
+        for keys in [vec![], vec![1, 4]] {
+            layer.keys = Some(keys);
+            let json = serde_json::to_string(&layer).unwrap();
+            assert_eq!(layer, serde_json::from_str::<Layer>(&json).unwrap());
+        }
     }
 
     #[test]

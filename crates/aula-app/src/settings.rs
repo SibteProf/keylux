@@ -65,6 +65,7 @@ pub struct Settings {
     pub openrgb_endpoint: String,
     pub app_lighting: crate::profiles::AppLighting,
     pub color_theme: ColorTheme,
+    pub ui_scale: f32,
 }
 
 impl Default for Settings {
@@ -80,6 +81,7 @@ impl Default for Settings {
             openrgb_endpoint: aula_protocol::openrgb::DEFAULT_ENDPOINT.into(),
             app_lighting: crate::profiles::AppLighting::default(),
             color_theme: ColorTheme::Dark,
+            ui_scale: 1.0,
         }
     }
 }

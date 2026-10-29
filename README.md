@@ -42,6 +42,8 @@ genuinely surprising — and turns it into something usable.
 - User effects as `.rhai` scripts, hot-reloaded from `effects/`
 - Keyframe animations: paint them in the timeline editor, or import a GIF,
   image or folder of frames
+- Layered compositions with per-layer key selection: keep chosen keys static,
+  animate others, or turn individual keys off
 - Runs in the system tray (Windows), so the lighting keeps going with the
   window closed
 - Application lighting profiles (Windows and Linux/X11): automatically switch effects and
@@ -49,6 +51,54 @@ genuinely surprising — and turns it into something usable.
 
 See [`docs/PROTOCOL.md`](docs/PROTOCOL.md) for the native F75 protocol and
 [`docs/KEYBOARDS.md`](docs/KEYBOARDS.md) for cross-brand control.
+
+### Mix static and animated keys
+
+In **Create**, choose **Add layer → Motion generator**, then add a
+**Static colour** layer above it. Static layers start with the current brush colour
+and use Normal blending so they replace the animation on their selected keys.
+Choose **Select keys**, press **None**, and click or drag across the keys
+you want fixed. Right-click removes keys; Row, Column, and Region select groups.
+Outlined keys belong to the active layer. **All** and **Invert** also work on
+generator and painted layers, so different effects can cover different areas.
+
+Turn off **Select keys** to paint colours. Fill, clear, paste, and gradient
+tools affect only the layer's selected keys. A single-keyframe layer stays static;
+add keyframes to animate it. A black Static layer with Normal blending keeps its
+selected keys off. Save the composition as `.klx` to retain layers and selections,
+then select it for playback. Compositions use the existing wired/OpenRGB streaming
+path; native receiver playback remains restricted.
+
+### Desktop workspace
+
+**Play** has a searchable effect library, keyboard preview, and effect controls.
+**Create** keeps the layer inspector beside the canvas in larger windows and
+stacks the editor in compact layouts. **Apps** contains application profiles;
+**Settings** contains connection, appearance, interface size, and window options.
+The **Device** menu holds connection diagnostics. The **keylux** menu provides
+navigation when the sidebar is hidden or the interface is enlarged.
+
+On Windows and Linux, enable **Settings → Startup → Run at startup** to launch
+keylux whenever you sign in to your desktop. Changes apply immediately, and the
+checkbox reads the actual startup registration.
+
+Windows uses the current user's
+[`Run` registry entry](https://learn.microsoft.com/windows/win32/setupapi/run-and-runonce-registry-keys),
+which is removed when unchecked. Linux uses an
+[XDG autostart entry](https://specifications.freedesktop.org/autostart/latest/)
+at `$XDG_CONFIG_HOME/autostart/keylux.desktop`, defaulting to
+`~/.config/autostart/keylux.desktop`. Unchecking writes a `Hidden=true` override
+so a system-wide entry cannot start it either. Linux desktop environments must
+support XDG autostart; this starts the GUI after desktop sign-in, not before login.
+Neither platform requires administrator permissions.
+
+Keep the executable in its installed folder; after moving it, turn this option
+off and on to register its new location.
+
+Use Ctrl/Cmd+1 through 4 to navigate, Ctrl/Cmd+comma for Settings, and Ctrl/Cmd+S
+to save a composition. **Keyboard controls** below the canvas provide key
+selection and painting without pointer input. See [the design notes](docs/UI-DESIGN.md)
+for the UI audit, visual system, accessibility work, and verification scope.
 
 ## Build
 
