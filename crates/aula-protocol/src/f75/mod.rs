@@ -141,6 +141,9 @@ impl F75 {
     }
 
     pub fn open_candidate(c: &DeviceCandidate, order: ChannelOrder) -> Result<Self> {
+        if let Some(reason) = crate::compatibility::unsupported_reason(c.id) {
+            return Err(Error::UnsupportedHardware(reason));
+        }
         let io = Transport::open_path(&c.path, p::REPORT_ID, p::PACKET_LEN)?;
         Ok(Self {
             io,

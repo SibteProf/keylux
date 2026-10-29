@@ -48,6 +48,11 @@ jobs:
           KEYLUX_TEST_BINARY: ${{ github.workspace }}/target/release/keylux
         run: cargo test -p aula-app --test openrgb_cli
 
+      - name: Test diagnostics through the release binary
+        env:
+          KEYLUX_TEST_BINARY: ${{ github.workspace }}/target/release/keylux
+        run: cargo test -p aula-app --test diagnose_cli
+
       - name: Stage Windows package
         if: runner.os == 'Windows'
         shell: pwsh

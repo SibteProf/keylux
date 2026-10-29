@@ -45,6 +45,9 @@ impl Transport {
     /// command is sent.
     pub fn open(vid: u16, pid: u16, report_id: u8, packet_len: usize) -> Result<Self> {
         let id = DeviceId::new(vid, pid);
+        if let Some(reason) = crate::compatibility::unsupported_reason(id) {
+            return Err(Error::UnsupportedHardware(reason));
+        }
         let api = HidApi::new().map_err(Error::Hid)?;
         let all: Vec<&DeviceInfo> = api.device_list().collect();
 
@@ -314,6 +317,9 @@ fn targets(all: &[&DeviceInfo], spec: &ScanSpec<'_>) -> Vec<(DeviceId, Link, Con
 
     for d in all {
         let id = id_of(d);
+        if crate::compatibility::unsupported_reason(id).is_some() {
+            continue;
+        }
         if let Some((_, link)) = spec.known.iter().find(|(k, _)| *k == id) {
             found
                 .entry((id.vid, id.pid))
@@ -333,6 +339,9 @@ fn targets(all: &[&DeviceInfo], spec: &ScanSpec<'_>) -> Vec<(DeviceId, Link, Con
     if spec.opts.deep {
         for d in all {
             let id = id_of(d);
+            if crate::compatibility::unsupported_reason(id).is_some() {
+                continue;
+            }
             if found.contains_key(&(id.vid, id.pid)) {
                 continue;
             }
@@ -514,6 +523,7 @@ fn describe(d: &DeviceInfo) -> CollectionInfo {
         interface: d.interface_number(),
         product: d.product_string().unwrap_or_default().to_string(),
         manufacturer: d.manufacturer_string().unwrap_or_default().to_string(),
+        release_number: d.release_number(),
     }
 }
 
@@ -530,6 +540,7 @@ pub struct CollectionInfo {
     pub interface: i32,
     pub product: String,
     pub manufacturer: String,
+    pub release_number: u16,
 }
 
 impl CollectionInfo {
@@ -562,6 +573,24 @@ mod tests {
 
     const WIRED: DeviceId = DeviceId::new(0x258a, 0x010c);
     const DONGLE: DeviceId = DeviceId::new(0x3554, 0xfa09);
+
+    #[test]
+    fn unsupported_variant_is_refused_before_opening_hardware() {
+        let id = crate::compatibility::F75_WIRED_UNVERIFIED;
+        assert!(matches!(
+            Transport::open(id.vid, id.pid, 6, 520),
+            Err(Error::UnsupportedHardware(_))
+        ));
+        let c = candidate(id, Link::Wired, true);
+        assert!(matches!(
+            crate::dongle::Dongle::open_candidate(&c),
+            Err(Error::UnsupportedHardware(_))
+        ));
+        assert!(matches!(
+            crate::F75::open_candidate(&c, crate::ChannelOrder::Rgb),
+            Err(Error::UnsupportedHardware(_))
+        ));
+    }
 
     #[test]
     fn wired_wins_when_nothing_is_pinned() {

@@ -24,15 +24,20 @@ fn effects_dir() -> std::path::PathBuf {
 pub fn run() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let name = args.first().map(String::as_str).unwrap_or("list");
+    if name == "diagnose" {
+        return diagnose(&args);
+    }
     if matches!(name, "--version" | "-V") {
         println!("keylux {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
     if matches!(name, "help" | "--help" | "-h") {
+        println!("keylux diagnose [--device VID:PID] [--output FILE]\n  Enumerate HID metadata only; no device handles or protocol commands.\n");
         println!("keylux devices [--openrgb IP:PORT | --native]\nkeylux keyboards\nkeylux list\nkeylux <effect> [seconds] [--device SELECTOR | --keyboard NAME] [--openrgb IP:PORT | --native] [--fps N] [--param value ...]\n\nUse devices to list connected keyboard selectors. OpenRGB keyboards require its SDK server.\n--keyboard matches one exact device name and rejects duplicates.\n--native limits discovery to AULA HID. --openrgb restricts discovery to that SDK server.\nWith no selector, the saved GUI selection is used, then automatic selection (AULA preferred).");
         return Ok(());
     }
     if name == "keyboards" {
+        println!("Reported variant: AULA F75 Wired 1a2c:9407 (lighting unsupported; see docs/F75-WIRED.md)");
         println!("Native: AULA F75 (wired and receiver)\nOpenRGB targets (USB; upstream Direct support, physical testing still required):");
         for model in aula_protocol::openrgb::catalog::MODELS {
             println!("  {}  [{}]", model.name, model.usb_ids);
@@ -178,6 +183,42 @@ pub fn run() -> anyhow::Result<()> {
 
 fn script_error(entry: &aula_effects::registry::Entry) -> Option<String> {
     entry.runtime_error().map(str::to_string)
+}
+
+fn diagnose(args: &[String]) -> anyhow::Result<()> {
+    let id = option(args, "--device")?
+        .map(str::parse::<DeviceId>)
+        .transpose()?;
+    let output = option(args, "--output")?;
+    let collections = aula_protocol::transport::list_all()?;
+    let mut report = format!(
+        "keylux {} HID diagnostics\nOS: {} / {}\nEnumeration only: no device handles opened; no protocol commands sent.\n\n",
+        env!("CARGO_PKG_VERSION"), std::env::consts::OS, std::env::consts::ARCH,
+    );
+    let mut count = 0;
+    for c in collections
+        .iter()
+        .filter(|c| id.map_or(true, |id| c.id == id))
+    {
+        count += 1;
+        report.push_str(&format!(
+            "{} revision={:04x} interface={} usage_page={:04x} usage={:04x}\n  product: {}\n  manufacturer: {}\n",
+            c.id, c.release_number, c.interface, c.usage_page, c.usage, c.product, c.manufacturer,
+        ));
+        if let Some(reason) = aula_protocol::compatibility::unsupported_reason(c.id) {
+            report.push_str(&format!("  status: {reason}\n"));
+        }
+    }
+    report.push_str(&format!(
+        "\n{count} HID collection(s). HID paths and serial numbers are omitted.\n"
+    ));
+    if let Some(path) = output {
+        std::fs::write(path, report)?;
+    } else {
+        print!("{report}");
+    }
+    anyhow::ensure!(count > 0, "No matching HID collections found");
+    Ok(())
 }
 
 /// `--speed 1.5 --color #ff00aa` style overrides, matched against declared params.

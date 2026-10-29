@@ -47,6 +47,7 @@
 //!   trying unknown command bytes, which could write firmware.
 
 pub mod color;
+pub mod compatibility;
 pub mod device;
 pub mod dongle;
 pub mod f75;
@@ -63,6 +64,9 @@ pub use transport::{Choice, Confidence, DeviceCandidate, ScanOptions};
 /// Errors this crate can produce.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("{0}")]
+    UnsupportedHardware(&'static str),
+
     #[error("OpenRGB: {0}")]
     OpenRgb(String),
 
