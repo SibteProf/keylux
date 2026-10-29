@@ -3,6 +3,12 @@
 **/*.rs.bk
 *.pdb
 
+# Locally staged release archives and packages
+/keylux-windows-x64/
+/keylux-windows-x64.zip
+/keylux-linux-x64/
+/keylux-linux-x64.tar.gz
+
 # USB captures: large and machine-specific. Decoded findings live in
 # docs/PROTOCOL.md instead.
 *.pcapng

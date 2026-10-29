@@ -21,6 +21,21 @@ pub struct BoardGeom {
 }
 
 impl BoardGeom {
+    pub fn outline_keys(&self, ui: &egui::Ui, rect: egui::Rect, selected: impl Fn(usize) -> bool) {
+        let painter = ui.painter_at(rect);
+        for (key_rect, led) in &self.boxes {
+            if selected(*led) {
+                painter.rect_stroke(
+                    *key_rect,
+                    2.0,
+                    egui::Stroke::new(2.0_f32, theme::current().accent),
+                );
+            } else {
+                painter.rect_filled(*key_rect, 2.0, egui::Color32::from_black_alpha(150));
+            }
+        }
+    }
+
     /// The LED whose key contains `p`, if any.
     pub fn led_at(&self, p: egui::Pos2) -> Option<usize> {
         self.boxes
@@ -43,7 +58,7 @@ impl BoardGeom {
 pub fn draw_board(ui: &egui::Ui, rect: egui::Rect, layout: &[KeyPos], frame: &Frame) -> BoardGeom {
     let pal = theme::current();
     let painter = ui.painter_at(rect);
-    painter.rect_filled(rect, 6.0, pal.board_bg);
+    painter.rect_filled(rect, 8.0, pal.board_bg);
 
     let mut boxes = Vec::with_capacity(layout.len());
     if layout.is_empty() {
@@ -79,14 +94,17 @@ pub fn draw_board(ui: &egui::Ui, rect: egui::Rect, layout: &[KeyPos], frame: &Fr
         } else {
             egui::Color32::from_rgb(c.r, c.g, c.b)
         };
-        painter.rect_filled(key_rect, 2.0, fill);
-        painter.rect_stroke(key_rect, 2.0, egui::Stroke::new(0.5_f32, pal.key_stroke));
+        painter.rect_filled(key_rect, 4.0, fill);
+        painter.rect_stroke(key_rect, 4.0, egui::Stroke::new(0.75_f32, pal.key_stroke));
 
-        painter.text(
+        // SDK labels are often "Key: A". Keep the full label in the layout
+        // for scripts, and clip long legends so they cannot cover nearby keys.
+        let label = k.name.strip_prefix("Key: ").unwrap_or(&k.name);
+        painter.with_clip_rect(key_rect.shrink(1.0)).text(
             key_rect.center(),
             egui::Align2::CENTER_CENTER,
-            k.name,
-            egui::FontId::proportional(10.0),
+            label,
+            egui::FontId::proportional((unit * 0.28).clamp(10.0, 13.0)),
             key_label_color(c, pal.text_muted),
         );
 
@@ -101,8 +119,16 @@ fn key_label_color(c: Rgb, muted: egui::Color32) -> egui::Color32 {
         return muted;
     }
 
-    let luminance = 0.2126 * f32::from(c.r) + 0.7152 * f32::from(c.g) + 0.0722 * f32::from(c.b);
-    if luminance > 160.0 {
+    let linear = |value: u8| {
+        let value = f32::from(value) / 255.0;
+        if value <= 0.04045 {
+            value / 12.92
+        } else {
+            ((value + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    let luminance = 0.2126 * linear(c.r) + 0.7152 * linear(c.g) + 0.0722 * linear(c.b);
+    if luminance > 0.179 {
         egui::Color32::BLACK
     } else {
         egui::Color32::WHITE
@@ -134,5 +160,13 @@ mod tests {
         let muted = egui::Color32::from_rgb(90, 90, 90);
 
         assert_eq!(key_label_color(Rgb::BLACK, muted), muted);
+    }
+
+    #[test]
+    fn red_keys_use_black_labels_for_readable_contrast() {
+        assert_eq!(
+            key_label_color(Rgb::new(255, 0, 0), egui::Color32::GRAY),
+            egui::Color32::BLACK
+        );
     }
 }

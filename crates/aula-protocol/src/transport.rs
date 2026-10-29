@@ -462,6 +462,7 @@ pub fn choose(candidates: &[DeviceCandidate], pinned: Option<DeviceId>) -> Choic
             Link::Wired => 0,
             Link::Dongle => 1,
             Link::Unknown => 2,
+            Link::OpenRgb => 3,
         };
         (link, u8::from(!c.confirmed))
     };

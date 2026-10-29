@@ -1,7 +1,7 @@
 name: Release
 
 # Build distributable desktop packages. Runs on a version tag (attaches archives
-# to a GitHub Release) and on manual dispatch (uploads them as workflow
+# to a draft GitHub Release) and on manual dispatch (uploads them as workflow
 # artifacts you can download from the run).
 on:
   push:
@@ -38,6 +38,16 @@ jobs:
       - name: Build release
         run: cargo build --release -p aula-app
 
+      - name: Smoke test release binary
+        run: |
+          ./target/release/keylux --version
+          ./target/release/keylux list
+
+      - name: Test OpenRGB through the release binary
+        env:
+          KEYLUX_TEST_BINARY: ${{ github.workspace }}/target/release/keylux
+        run: cargo test -p aula-app --test openrgb_cli
+
       - name: Stage Windows package
         if: runner.os == 'Windows'
         shell: pwsh
@@ -49,6 +59,7 @@ jobs:
           # folder is runtime content (gitignored), so ship an empty one with a
           # placeholder; the app also creates it on first run.
           Copy-Item -Recurse effects $stage/effects
+          Copy-Item -Recurse docs $stage/docs
           New-Item -ItemType Directory -Force $stage/animations | Out-Null
           Set-Content $stage/animations/.gitkeep ""
           Copy-Item README.md, LICENSE-MIT, LICENSE-APACHE $stage/
@@ -62,6 +73,7 @@ jobs:
           mkdir -p "$stage/animations"
           cp target/release/keylux "$stage/"
           cp -r effects "$stage/effects"
+          cp -r docs "$stage/docs"
           touch "$stage/animations/.gitkeep"
           cp README.md LICENSE-MIT LICENSE-APACHE "$stage/"
           tar -czf "${{ matrix.archive }}" -C "$stage" .
@@ -77,3 +89,4 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: ${{ matrix.archive }}
+          draft: true

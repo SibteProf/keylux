@@ -1,6 +1,6 @@
 [package]
 name = "aula-app"
-description = "Desktop app for controlling AULA keyboard RGB"
+description = "Desktop keyboard RGB control with native AULA and OpenRGB backends"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -23,9 +23,11 @@ tray-icon.workspace = true
 raw-window-handle.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+strum.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-windows-sys.workspace = true
+windows-sys = { workspace = true, features = ["Win32_System_Threading", "Win32_System_Registry", "Win32_Security"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = "0.18.2"
+x11rb = "0.13"

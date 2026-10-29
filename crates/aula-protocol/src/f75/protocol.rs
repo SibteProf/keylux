@@ -123,7 +123,7 @@ pub const fn min_frame_gap_ms(link: Link) -> u64 {
     match link {
         Link::Wired => MIN_FRAME_GAP_MS,
         // An unrecognised link gets the cautious number, not the fast one.
-        Link::Dongle | Link::Unknown => DONGLE_MIN_FRAME_GAP_MS,
+        Link::Dongle | Link::Unknown | Link::OpenRgb => DONGLE_MIN_FRAME_GAP_MS,
     }
 }
 
@@ -138,7 +138,7 @@ pub const fn max_fps_for(link: Link) -> u32 {
 pub const fn config_settle_ms(link: Link) -> u64 {
     match link {
         Link::Wired => CONFIG_SETTLE_MS,
-        Link::Dongle | Link::Unknown => CONFIG_SETTLE_MS * 2,
+        Link::Dongle | Link::Unknown | Link::OpenRgb => CONFIG_SETTLE_MS * 2,
     }
 }
 

@@ -59,7 +59,7 @@ pub fn layout() -> Vec<KeyPos> {
         for (name, w) in row.iter() {
             if let Some(led) = led_for(name) {
                 keys.push(KeyPos {
-                    name: static_name(name),
+                    name: (*name).to_string(),
                     row: row_idx as u8,
                     x: x + w / 2.0,
                     w: *w,
@@ -76,15 +76,6 @@ fn led_for(name: &str) -> Option<usize> {
     LED_ORDER
         .iter()
         .position(|slot| matches!(slot, Some(n) if *n == name))
-}
-
-/// `KeyPos::name` is `&'static str`; ROWS entries already are.
-fn static_name(name: &str) -> &'static str {
-    ROWS.iter()
-        .flat_map(|r| r.iter())
-        .find(|(n, _)| *n == name)
-        .map(|(n, _)| *n)
-        .unwrap_or("?")
 }
 
 /// Rightmost key centre, in 1u units. Effects use it to normalise across the board.

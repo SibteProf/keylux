@@ -62,6 +62,7 @@ pub struct Editor {
     pub brush: Rgb,
     pub brush_b: Rgb,
     pub mode: BrushMode,
+    pub editing_keys: bool,
     pub playhead: f32,
     pub playing: bool,
     pub dirty: bool,
@@ -78,6 +79,7 @@ pub struct Editor {
     clip: Option<Vec<HexColor>>,
     region_start: Option<egui::Pos2>,
     stroke_open: bool,
+    keyboard_key: usize,
 }
 
 impl Editor {
@@ -106,6 +108,7 @@ impl Editor {
             brush: Rgb::new(255, 40, 120),
             brush_b: Rgb::new(40, 120, 255),
             mode: BrushMode::Key,
+            editing_keys: false,
             playhead: 0.0,
             playing: false,
             dirty: false,
@@ -119,6 +122,7 @@ impl Editor {
             clip: None,
             region_start: None,
             stroke_open: false,
+            keyboard_key: 0,
         }
     }
 
@@ -236,6 +240,16 @@ impl Editor {
     // ---- painting (acts on the active keyframe layer) ----
 
     pub fn paint(&mut self, led: usize, color: Rgb) {
+        if led >= self.comp.leds {
+            return;
+        }
+        if self.editing_keys {
+            self.set_key_membership(led, !color.is_black());
+            return;
+        }
+        if !self.comp.layers[self.active].affects(led) {
+            return;
+        }
         if let Some(k) = self.cur_kf_mut() {
             if led < k.colors.len() {
                 k.colors[led] = HexColor::from(color);
@@ -245,11 +259,53 @@ impl Editor {
     }
 
     pub fn fill_all(&mut self, color: Rgb) {
+        let keys = self.comp.layers[self.active].keys.clone();
         if let Some(k) = self.cur_kf_mut() {
-            for c in k.colors.iter_mut() {
-                *c = HexColor::from(color);
+            for (led, c) in k.colors.iter_mut().enumerate() {
+                if keys.as_ref().map_or(true, |keys| keys.contains(&led)) {
+                    *c = HexColor::from(color);
+                }
             }
         }
+        self.dirty = true;
+    }
+
+    fn set_key_membership(&mut self, led: usize, included: bool) {
+        if led >= self.comp.leds {
+            return;
+        }
+        let layer = &mut self.comp.layers[self.active];
+        if layer.affects(led) == included {
+            return;
+        }
+        let keys = layer
+            .keys
+            .get_or_insert_with(|| (0..self.comp.leds).collect());
+        if included {
+            keys.push(led);
+            keys.sort_unstable();
+        } else {
+            keys.retain(|&key| key != led);
+        }
+        self.dirty = true;
+    }
+
+    fn add_static_layer(&mut self) {
+        self.snapshot();
+        let mut anim = Animation::new("Static", self.comp.leds);
+        anim.keyframes = vec![Keyframe {
+            t: 0.0,
+            colors: vec![HexColor::from(self.brush); self.comp.leds],
+            ease: Ease::default(),
+        }];
+        anim.duration = self.comp.duration;
+        anim.loops = self.comp.loops;
+        let mut layer = Layer::keyframes("Static", anim);
+        layer.blend = Blend::Normal;
+        self.comp.layers.push(layer);
+        self.active = self.comp.layers.len() - 1;
+        self.selected = 0;
+        self.editing_keys = true;
         self.dirty = true;
     }
 
@@ -358,37 +414,211 @@ impl Editor {
 }
 
 /// Draw the editor.
-pub fn show(ui: &mut egui::Ui, ed: &mut Editor, layout: &[KeyPos], anim_dir: &std::path::Path) {
+pub fn show(
+    ui: &mut egui::Ui,
+    ed: &mut Editor,
+    layout: &[KeyPos],
+    anim_dir: &std::path::Path,
+    can_save: bool,
+    can_stream: bool,
+) {
     handle_shortcuts(ui, ed);
-    top_bar(ui, ed, anim_dir);
-    ui.separator();
-    layer_panel(ui, ed);
-    ui.separator();
-
-    if ed.active_is_keyframes() {
-        brush_bar(ui, ed);
-        ui.add_space(4.0);
-        ui.weak("Click to paint · right-click to erase · drag to paint several.");
-        board_area(ui, ed, layout, true);
-        ui.add_space(6.0);
-        timeline_controls(ui, ed);
-        ui.add_space(4.0);
-        timeline_strip(ui, ed);
-        keyframe_controls(ui, ed);
-    } else {
-        ui.weak("Generator layer — it animates procedurally. Tune it below; the board shows the composite.");
-        board_area(ui, ed, layout, false);
-        ui.add_space(6.0);
-        generator_controls(ui, ed);
+    if ui.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::S)) {
+        ed.save(anim_dir);
     }
+    egui::ScrollArea::vertical()
+        .id_salt("composition-editor")
+        .show(ui, |ui| {
+            show_contents(ui, ed, layout, anim_dir, can_save, can_stream);
+        });
+}
 
-    if let Some(s) = &ed.status {
-        ui.add_space(4.0);
-        ui.weak(s);
+fn show_contents(
+    ui: &mut egui::Ui,
+    ed: &mut Editor,
+    layout: &[KeyPos],
+    anim_dir: &std::path::Path,
+    can_save: bool,
+    can_stream: bool,
+) {
+    top_bar(ui, ed, anim_dir, can_save);
+    ui.add_space(12.0);
+    if ui.available_width() >= 860.0 {
+        ui.horizontal_top(|ui| {
+            ui.allocate_ui_with_layout(
+                egui::vec2(232.0, 0.0),
+                egui::Layout::top_down(egui::Align::Min),
+                |ui| {
+                    theme::surface(ui, |ui| {
+                        layer_panel(ui, ed);
+                    });
+                },
+            );
+            ui.add_space(6.0);
+            ui.vertical(|ui| {
+                canvas_and_tools(ui, ed, layout, can_stream);
+            });
+        });
+    } else {
+        canvas(ui, ed, layout, can_stream);
+        ui.add_space(14.0);
+        theme::surface(ui, |ui| {
+            egui::CollapsingHeader::new(format!("Layers · {}", ed.comp.layers.len()))
+                .default_open(false)
+                .show(ui, |ui| {
+                    layer_panel(ui, ed);
+                });
+        });
+        ui.add_space(14.0);
+        layer_tools(ui, ed, layout);
+    }
+    if let Some(status) = &ed.status {
+        ui.add_space(12.0);
+        theme::muted(ui, status);
     }
 }
 
+fn canvas_and_tools(ui: &mut egui::Ui, ed: &mut Editor, layout: &[KeyPos], can_stream: bool) {
+    canvas(ui, ed, layout, can_stream);
+    ui.add_space(14.0);
+    layer_tools(ui, ed, layout);
+}
+
+fn canvas(ui: &mut egui::Ui, ed: &mut Editor, layout: &[KeyPos], can_stream: bool) {
+    theme::surface(ui, |ui| {
+        ui.horizontal_wrapped(|ui| {
+            ui.label(egui::RichText::new("Keyboard canvas").size(17.0).strong());
+            theme::muted(ui, &ed.comp.layers[ed.active].name);
+            ui.add_space(6.0);
+            ui.add_enabled(
+                can_stream,
+                egui::Checkbox::new(&mut ed.live, "Live preview"),
+            )
+            .on_hover_text("Show canvas changes on the connected keyboard.")
+            .on_disabled_hover_text("Connect a keyboard with the same LED count to preview live.");
+        });
+        key_mask_controls(ui, ed, layout);
+        if !ed.editing_keys && ed.active_is_keyframes() {
+            ui.horizontal_wrapped(|ui| {
+                ui.label("Brush");
+                let mut rgb = [ed.brush.r, ed.brush.g, ed.brush.b];
+                if theme::color_edit(ui, "Brush colour", &mut rgb).changed() {
+                    ed.brush = Rgb::new(rgb[0], rgb[1], rgb[2]);
+                }
+                egui::ComboBox::from_id_salt("brush-mode")
+                    .width(120.0)
+                    .selected_text(ed.mode.label())
+                    .show_ui(ui, |ui| {
+                        for mode in BrushMode::ALL {
+                            ui.selectable_value(&mut ed.mode, mode, mode.label());
+                        }
+                    });
+            });
+        }
+        ui.add_space(6.0);
+        board_area(ui, ed, layout, ed.editing_keys || ed.active_is_keyframes());
+        ui.add_space(6.0);
+        ui.label(
+            egui::RichText::new(if ed.editing_keys {
+                "Click to include · Right-click to exclude · Drag to select several"
+            } else if ed.active_is_keyframes() {
+                "Click to paint · Right-click to erase · Drag to paint several"
+            } else {
+                "Previewing all layers · Choose Select keys to limit this motion"
+            })
+            .small()
+            .color(theme::current().text_muted),
+        );
+        egui::CollapsingHeader::new("Keyboard controls").show(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                let label = layout
+                    .iter()
+                    .find(|key| key.led == ed.keyboard_key)
+                    .map(|key| key.name.as_str())
+                    .unwrap_or("Choose a key");
+                egui::ComboBox::from_id_salt("canvas-key")
+                    .selected_text(label)
+                    .show_ui(ui, |ui| {
+                        for key in layout {
+                            ui.selectable_value(&mut ed.keyboard_key, key.led, &key.name);
+                        }
+                    });
+                if ui
+                    .add_enabled(
+                        ed.editing_keys || ed.active_is_keyframes(),
+                        egui::Button::new(if ed.editing_keys {
+                            "Include key"
+                        } else {
+                            "Paint key"
+                        }),
+                    )
+                    .clicked()
+                {
+                    ed.snapshot();
+                    ed.paint(
+                        ed.keyboard_key,
+                        if ed.editing_keys {
+                            Rgb::WHITE
+                        } else {
+                            ed.brush
+                        },
+                    );
+                }
+                if ui
+                    .add_enabled(
+                        ed.editing_keys || ed.active_is_keyframes(),
+                        egui::Button::new(if ed.editing_keys {
+                            "Exclude key"
+                        } else {
+                            "Erase key"
+                        }),
+                    )
+                    .clicked()
+                {
+                    ed.snapshot();
+                    ed.paint(ed.keyboard_key, Rgb::BLACK);
+                }
+            });
+        });
+    });
+}
+
+fn layer_tools(ui: &mut egui::Ui, ed: &mut Editor, layout: &[KeyPos]) {
+    if ed.editing_keys {
+        return;
+    }
+    theme::surface(ui, |ui| {
+        if ed.active_is_keyframes() {
+            theme::section(
+                ui,
+                "Animation & tools",
+                "Fill, blend, and animate this layer's selected keys.",
+            );
+            brush_bar(ui, ed);
+            if ui.button("Apply gradient").clicked() {
+                ed.snapshot();
+                ed.apply_gradient(layout);
+            }
+            ui.add_space(12.0);
+            egui::CollapsingHeader::new("Animation timeline")
+                .default_open(true)
+                .show(ui, |ui| {
+                    timeline_controls(ui, ed);
+                    timeline_strip(ui, ed);
+                    keyframe_controls(ui, ed);
+                });
+        } else {
+            theme::section(ui, "Motion", "Tune the animation on this layer.");
+            generator_controls(ui, ed);
+        }
+    });
+}
+
 fn handle_shortcuts(ui: &egui::Ui, ed: &mut Editor) {
+    // Text fields own their undo history while they have keyboard focus.
+    if ui.ctx().wants_keyboard_input() {
+        return;
+    }
     let (undo, redo) = ui.input(|i| {
         let cmd = i.modifiers.command;
         let undo = cmd && !i.modifiers.shift && i.key_pressed(egui::Key::Z);
@@ -404,58 +634,65 @@ fn handle_shortcuts(ui: &egui::Ui, ed: &mut Editor) {
     }
 }
 
-fn top_bar(ui: &mut egui::Ui, ed: &mut Editor, anim_dir: &std::path::Path) {
+fn top_bar(ui: &mut egui::Ui, ed: &mut Editor, anim_dir: &std::path::Path, can_save: bool) {
     let pal = theme::current();
-    // Name/file/save on one row, the live toggle on its own, so a narrow window
-    // never overlaps the "Send to keyboard" button onto the Save controls.
-    ui.horizontal(|ui| {
-        ui.label("Name");
-        if ui
-            .add(egui::TextEdit::singleline(&mut ed.comp.name).desired_width(160.0))
-            .changed()
-        {
-            ed.dirty = true;
-        }
-        ui.label("File");
-        ui.add(egui::TextEdit::singleline(&mut ed.file_name).desired_width(110.0));
-        if ui.button("💾 Save").clicked() {
-            ed.save(anim_dir);
-        }
-        if ed.dirty {
-            ui.colored_label(pal.warning, "unsaved");
-        }
-    });
-    ui.horizontal(|ui| {
-        ui.toggle_value(&mut ed.live, "📡 Send to keyboard")
-            .on_hover_text(
-                "Stream the composited preview to the real keyboard as you edit.\n\
-                 Smoothest over the cable; the 2.4 GHz link updates slowly.",
-            );
-
-        if ui.button("💾 Write frame to NVRAM (permanent)").clicked() {
-            ed.frame_requested = true;
-            ed.nvram_result = None;
-        }
-
-        if ed.frame_requested {
-            ui.colored_label(pal.text_muted, "Writing...");
-        } else if matches!(ed.nvram_result, Some(Ok(()))) {
-            ui.colored_label(pal.success, "Saved");
-        }
-    });
-    if let Some(Err(msg)) = &ed.nvram_result {
-        ui.horizontal(|ui| {
-            ui.colored_label(pal.danger, format!("Write to NVRAM failed: {msg}"));
+    let persisted = anim_dir
+        .join(format!("{}.klx", sanitise(&ed.file_name)))
+        .is_file();
+    let status = if ed.dirty {
+        "Unsaved changes"
+    } else if persisted {
+        "All changes saved"
+    } else {
+        "Draft · Not saved yet"
+    };
+    let name_width = (ui.available_width() - 170.0).clamp(140.0, 300.0);
+    ui.horizontal_wrapped(|ui| {
+        ui.allocate_ui_with_layout(egui::vec2(name_width, 58.0), egui::Layout::top_down(egui::Align::Min), |ui| {
+            let name = ui.add(egui::TextEdit::singleline(&mut ed.comp.name)
+                .desired_width(name_width - 10.0).hint_text("Composition name").font(egui::FontId::proportional(18.0)));
+            name.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "Composition name"));
+            if name.changed() { ed.dirty = true; }
+            ui.label(egui::RichText::new(status).small().color(pal.text_muted));
         });
+        ui.add_space(8.0);
+        if ui.add(theme::primary_button("Save")).on_hover_text("Save composition (Ctrl/Cmd+S)").clicked() { ed.save(anim_dir); }
+        ui.menu_button("File", |ui| {
+            ui.label("File name");
+            ui.text_edit_singleline(&mut ed.file_name);
+            ui.add_space(8.0);
+            if ui.add_enabled(can_save, egui::Button::new("Save current frame to keyboard"))
+                .on_hover_text("Permanently stores this single frame on the keyboard. Animation still needs keylux running.")
+                .on_disabled_hover_text("Permanent storage requires a supported native AULA connection.")
+                .clicked() { ed.frame_requested = true; ed.nvram_result = None; ui.close_menu(); }
+        });
+    });
+    if ed.frame_requested {
+        theme::muted(ui, "Saving frame to keyboard…");
+    } else if matches!(ed.nvram_result, Some(Ok(()))) {
+        ui.colored_label(pal.success, "Frame saved to keyboard");
+    }
+    if let Some(Err(message)) = &ed.nvram_result {
+        ui.colored_label(pal.danger, format!("Could not save frame: {message}"));
     }
 }
 
 /// The layer stack: add / reorder / blend / opacity / enable, and pick active.
 fn layer_panel(ui: &mut egui::Ui, ed: &mut Editor) {
-    ui.horizontal(|ui| {
-        ui.strong("Layers");
+    theme::section(ui, "Layers", "Top layers appear above those below.");
+    ui.menu_button("Add layer", |ui| {
         if ui
-            .button("➕ Paint")
+            .button("Static colour")
+            .on_hover_text(
+                "Add a fixed-colour layer, then choose its keys. Use Paint to change its colour.",
+            )
+            .clicked()
+        {
+            ed.add_static_layer();
+            ui.close_menu();
+        }
+        if ui
+            .button("Painted animation")
             .on_hover_text("Add a keyframe layer")
             .clicked()
         {
@@ -470,9 +707,10 @@ fn layer_panel(ui: &mut egui::Ui, ed: &mut Editor) {
             ed.active = ed.comp.layers.len() - 1;
             ed.selected = 0;
             ed.dirty = true;
+            ui.close_menu();
         }
         if ui
-            .button("➕ Generator")
+            .button("Motion generator")
             .on_hover_text("Add a procedural layer")
             .clicked()
         {
@@ -483,6 +721,7 @@ fn layer_panel(ui: &mut egui::Ui, ed: &mut Editor) {
                 .push(Layer::generator(format!("Gen {n}"), GenParams::default()));
             ed.active = ed.comp.layers.len() - 1;
             ed.dirty = true;
+            ui.close_menu();
         }
     });
 
@@ -491,43 +730,136 @@ fn layer_panel(ui: &mut egui::Ui, ed: &mut Editor) {
     let mut to_select = None;
     let mut reorder: Option<(usize, isize)> = None;
     let mut toggle: Option<usize> = None;
-    for i in (0..count).rev() {
-        let layer = &ed.comp.layers[i];
-        let icon = match layer.content {
-            LayerContent::Keyframes(_) => "🎞",
-            LayerContent::Generator(_) => "✨",
-        };
-        let name = layer.name.clone();
-        let enabled = layer.enabled;
-        let is_active = i == ed.active;
-        ui.horizontal(|ui| {
-            let mut en = enabled;
-            if ui.checkbox(&mut en, "").changed() {
-                toggle = Some(i);
-            }
-            if ui
-                .selectable_label(is_active, format!("{icon} {name}"))
-                .clicked()
-            {
-                to_select = Some(i);
-            }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui
-                    .add_enabled(i + 1 < count, egui::Button::new("⬆").small())
-                    .clicked()
-                {
-                    reorder = Some((i, 1)); // toward the top of the stack
+    egui::ScrollArea::vertical()
+        .id_salt("layer-stack")
+        .min_scrolled_height(190.0)
+        .max_height(190.0)
+        .show(ui, |ui| {
+            for i in (0..count).rev() {
+                let layer = &ed.comp.layers[i];
+                let name = layer.name.clone();
+                let enabled = layer.enabled;
+                let selected = i == ed.active;
+                let kind = match &layer.content {
+                    LayerContent::Keyframes(animation) if animation.keyframes.len() == 1 => {
+                        "Static colour"
+                    }
+                    LayerContent::Keyframes(_) => "Painted animation",
+                    LayerContent::Generator(params) => params.kind.label(),
+                };
+                let pal = theme::current();
+                let (rect, response) = ui.allocate_exact_size(
+                    egui::vec2(ui.available_width(), 58.0),
+                    egui::Sense::click(),
+                );
+                let fill = if selected {
+                    pal.surface_alt
+                } else if response.hovered() {
+                    pal.hovered_bg
+                } else {
+                    pal.surface
+                };
+                ui.painter().rect_filled(rect, 6.0, fill);
+                if selected || response.has_focus() {
+                    ui.painter()
+                        .rect_stroke(rect, 6.0, egui::Stroke::new(1.0_f32, pal.accent));
                 }
-                if ui
-                    .add_enabled(i > 0, egui::Button::new("⬇").small())
-                    .clicked()
-                {
-                    reorder = Some((i, -1));
+                response.widget_info(|| {
+                    egui::WidgetInfo::selected(
+                        egui::WidgetType::SelectableLabel,
+                        true,
+                        selected,
+                        &name,
+                    )
+                });
+                ui.allocate_new_ui(
+                    egui::UiBuilder::new().max_rect(rect.shrink2(egui::vec2(10.0, 6.0))),
+                    |ui| {
+                        ui.horizontal(|ui| {
+                            ui.allocate_ui_with_layout(
+                                egui::vec2((ui.available_width() - 36.0).max(40.0), 46.0),
+                                egui::Layout::top_down(egui::Align::Min),
+                                |ui| {
+                                    ui.set_min_width(ui.available_width());
+                                    ui.spacing_mut().item_spacing.y = 2.0;
+                                    ui.add(
+                                        egui::Label::new(egui::RichText::new(&name).strong())
+                                            .truncate(),
+                                    );
+                                    ui.label(
+                                        egui::RichText::new(if enabled {
+                                            kind.to_owned()
+                                        } else {
+                                            format!("{kind} · Hidden")
+                                        })
+                                        .small()
+                                        .color(pal.text_muted),
+                                    );
+                                },
+                            );
+                            let mut visible = enabled;
+                            let visibility = ui
+                                .checkbox(&mut visible, "")
+                                .on_hover_text(format!("Show or hide {name}"));
+                            visibility.widget_info(|| {
+                                egui::WidgetInfo::selected(
+                                    egui::WidgetType::Checkbox,
+                                    true,
+                                    visible,
+                                    format!("Show {name}"),
+                                )
+                            });
+                            if visibility.changed() {
+                                toggle = Some(i);
+                            }
+                        });
+                    },
+                );
+                if response.clicked() {
+                    to_select = Some(i);
                 }
-            });
+                response.context_menu(|ui| {
+                    if ui
+                        .add_enabled(i + 1 < count, egui::Button::new("Move up"))
+                        .clicked()
+                    {
+                        reorder = Some((i, 1));
+                        ui.close_menu();
+                    }
+                    if ui
+                        .add_enabled(i > 0, egui::Button::new("Move down"))
+                        .clicked()
+                    {
+                        reorder = Some((i, -1));
+                        ui.close_menu();
+                    }
+                });
+            }
+        });
+
+    if count > 1 {
+        ui.horizontal_wrapped(|ui| {
+            for (glyph, label, allowed, direction) in [
+                ("↑", "Move selected layer up", ed.active + 1 < count, 1),
+                ("↓", "Move selected layer down", ed.active > 0, -1),
+            ] {
+                let response = ui
+                    .add_enabled(
+                        allowed,
+                        egui::Button::new(glyph).min_size(egui::vec2(32.0, 28.0)),
+                    )
+                    .on_hover_text(label);
+                response.widget_info(|| {
+                    egui::WidgetInfo::labeled(egui::WidgetType::Button, allowed, label)
+                });
+                if response.clicked() {
+                    reorder = Some((ed.active, direction));
+                }
+            }
+            theme::muted(ui, "Layer order");
         });
     }
-
+    ui.add_space(14.0);
     if let Some(i) = to_select {
         ed.active = i;
         ed.selected = 0;
@@ -551,52 +883,43 @@ fn layer_panel(ui: &mut egui::Ui, ed: &mut Editor) {
         }
     }
 
-    // Controls for the active layer: blend, opacity, rename, delete.
     if let Some(layer) = ed.comp.layers.get_mut(ed.active) {
-        let mut changed = false;
-        ui.horizontal(|ui| {
-            ui.label("Blend");
-            egui::ComboBox::from_id_salt("layer-blend")
-                .selected_text(blend_label(layer.blend))
-                .show_ui(ui, |ui| {
-                    for b in [
-                        Blend::Normal,
-                        Blend::Add,
-                        Blend::Screen,
-                        Blend::Multiply,
-                        Blend::Max,
-                    ] {
-                        if ui
-                            .selectable_value(&mut layer.blend, b, blend_label(b))
-                            .changed()
-                        {
-                            changed = true;
-                        }
-                    }
-                });
-            ui.label("Opacity");
-            if ui
-                .add(egui::Slider::new(&mut layer.opacity, 0.0..=1.0))
-                .changed()
-            {
-                changed = true;
-            }
-        });
-        ui.horizontal(|ui| {
-            ui.label("Layer name");
-            if ui
-                .add(egui::TextEdit::singleline(&mut layer.name).desired_width(160.0))
-                .changed()
-            {
-                changed = true;
-            }
-        });
+        let name_label = ui.label("Layer name");
+        let mut changed = ui
+            .add(egui::TextEdit::singleline(&mut layer.name).desired_width(f32::INFINITY))
+            .labelled_by(name_label.id)
+            .changed();
+        ui.label("Blend mode");
+        egui::ComboBox::from_id_salt("layer-blend")
+            .width(ui.available_width() - 12.0)
+            .selected_text(blend_label(layer.blend))
+            .show_ui(ui, |ui| {
+                for blend in [
+                    Blend::Normal,
+                    Blend::Add,
+                    Blend::Screen,
+                    Blend::Multiply,
+                    Blend::Max,
+                ] {
+                    changed |= ui
+                        .selectable_value(&mut layer.blend, blend, blend_label(blend))
+                        .changed();
+                }
+            });
+        ui.label("Opacity");
+        ui.spacing_mut().slider_width = (ui.available_width() - 55.0).max(70.0);
+        changed |= ui
+            .add(
+                egui::Slider::new(&mut layer.opacity, 0.0..=1.0)
+                    .custom_formatter(|value, _| format!("{:.0}%", value * 100.0)),
+            )
+            .changed();
         if changed {
             ed.dirty = true;
         }
     }
-
-    if count > 1 && ui.button("🗑 Delete layer").clicked() {
+    ui.add_space(10.0);
+    if count > 1 && ui.button("Delete layer").clicked() {
         ed.snapshot();
         ed.comp.layers.remove(ed.active);
         ed.clamp();
@@ -615,25 +938,13 @@ fn blend_label(b: Blend) -> &'static str {
 }
 
 fn brush_bar(ui: &mut egui::Ui, ed: &mut Editor) {
-    ui.horizontal(|ui| {
-        ui.label("Brush");
-        let mut rgb = [ed.brush.r, ed.brush.g, ed.brush.b];
-        if ui.color_edit_button_srgb(&mut rgb).changed() {
-            ed.brush = Rgb::new(rgb[0], rgb[1], rgb[2]);
-        }
-        egui::ComboBox::from_id_salt("brush-mode")
-            .selected_text(ed.mode.label())
-            .show_ui(ui, |ui| {
-                for m in BrushMode::ALL {
-                    ui.selectable_value(&mut ed.mode, m, m.label());
-                }
-            });
-        if ui.button("Fill all").clicked() {
+    ui.horizontal_wrapped(|ui| {
+        if ui.button("Fill selected").clicked() {
             ed.snapshot();
             let b = ed.brush;
             ed.fill_all(b);
         }
-        if ui.button("Clear").clicked() {
+        if ui.button("Clear selected").clicked() {
             ed.snapshot();
             ed.fill_all(Rgb::BLACK);
         }
@@ -641,28 +952,28 @@ fn brush_bar(ui: &mut egui::Ui, ed: &mut Editor) {
         let can_undo = !ed.undo.is_empty();
         let can_redo = !ed.redo.is_empty();
         if ui
-            .add_enabled(can_undo, egui::Button::new("↶ Undo"))
+            .add_enabled(can_undo, egui::Button::new("Undo"))
             .clicked()
         {
             ed.undo();
         }
         if ui
-            .add_enabled(can_redo, egui::Button::new("↷ Redo"))
+            .add_enabled(can_redo, egui::Button::new("Redo"))
             .clicked()
         {
             ed.redo();
         }
     });
 
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         ui.label("Gradient 2nd colour");
         let mut b = [ed.brush_b.r, ed.brush_b.g, ed.brush_b.b];
-        if ui.color_edit_button_srgb(&mut b).changed() {
+        if theme::color_edit(ui, "Gradient second colour", &mut b).changed() {
             ed.brush_b = Rgb::new(b[0], b[1], b[2]);
         }
         ui.separator();
         if ui
-            .button("📋 Copy")
+            .button("Copy frame")
             .on_hover_text("Copy this keyframe's colours")
             .clicked()
         {
@@ -678,8 +989,13 @@ fn brush_bar(ui: &mut egui::Ui, ed: &mut Editor) {
         {
             if let Some(colors) = ed.clip.clone() {
                 ed.snapshot();
+                let keys = ed.comp.layers[ed.active].keys.clone();
                 if let Some(k) = ed.cur_kf_mut() {
-                    k.colors = colors;
+                    for (led, (dst, src)) in k.colors.iter_mut().zip(colors).enumerate() {
+                        if keys.as_ref().map_or(true, |keys| keys.contains(&led)) {
+                            *dst = src;
+                        }
+                    }
                 }
                 ed.dirty = true;
             }
@@ -687,37 +1003,96 @@ fn brush_bar(ui: &mut egui::Ui, ed: &mut Editor) {
     });
 }
 
-fn board_area(ui: &mut egui::Ui, ed: &mut Editor, layout: &[KeyPos], editable: bool) {
-    if editable {
-        ui.horizontal(|ui| {
+fn key_mask_controls(ui: &mut egui::Ui, ed: &mut Editor, layout: &[KeyPos]) {
+    ui.horizontal_wrapped(|ui| {
+        if ui
+            .toggle_value(&mut ed.editing_keys, "Select keys")
+            .changed()
+        {
+            ed.region_start = None;
+            ed.stroke_open = false;
+            if ed.mode == BrushMode::Pick {
+                ed.mode = BrushMode::Key;
+            }
+        }
+        let count = layout
+            .iter()
+            .filter(|key| ed.comp.layers[ed.active].affects(key.led))
+            .count();
+        ui.label(format!("{count}/{} keys", layout.len()));
+        for (label, action) in [("All", 0), ("None", 1), ("Invert", 2)] {
+            if ui.button(label).clicked() {
+                ed.snapshot();
+                let layer = &mut ed.comp.layers[ed.active];
+                layer.keys = match action {
+                    0 => None,
+                    1 => Some(Vec::new()),
+                    _ => Some(
+                        (0..ed.comp.leds)
+                            .filter(|&led| !layer.affects(led))
+                            .collect(),
+                    ),
+                };
+                ed.dirty = true;
+            }
+        }
+        if ed.editing_keys {
+            for mode in [
+                BrushMode::Key,
+                BrushMode::Row,
+                BrushMode::Column,
+                BrushMode::Region,
+            ] {
+                ui.selectable_value(&mut ed.mode, mode, mode.label());
+            }
             if ui
-                .button("🎨 Apply gradient")
-                .on_hover_text("Fill the active layer with brush → second colour")
+                .add_enabled(!ed.undo.is_empty(), egui::Button::new("Undo"))
                 .clicked()
             {
-                ed.snapshot();
-                ed.apply_gradient(layout);
+                ed.undo();
             }
-        });
-    }
+            if ui
+                .add_enabled(!ed.redo.is_empty(), egui::Button::new("Redo"))
+                .clicked()
+            {
+                ed.redo();
+            }
+        }
+    });
+}
 
+fn board_area(ui: &mut egui::Ui, ed: &mut Editor, layout: &[KeyPos], editable: bool) {
     let sense = if editable {
         egui::Sense::click_and_drag()
     } else {
         egui::Sense::hover()
     };
-    let desired = egui::vec2(ui.available_width(), 200.0);
+    let desired = egui::vec2(
+        ui.available_width(),
+        (ui.available_width() * 0.32).clamp(165.0, 235.0),
+    );
     let (rect, resp) = ui.allocate_exact_size(desired, sense);
     let frame = ed.preview_frame(ed.comp.leds, layout);
     let geom: BoardGeom = board::draw_board(ui, rect, layout, &frame);
+    if ed.editing_keys {
+        geom.outline_keys(ui, rect, |led| ed.comp.layers[ed.active].affects(led));
+    }
 
     if !editable {
         return;
     }
 
     let secondary_down = ui.input(|i| i.pointer.button_down(egui::PointerButton::Secondary));
-    let erase = secondary_down || resp.secondary_clicked();
-    let color = if erase { Rgb::BLACK } else { ed.brush };
+    let erase = secondary_down
+        || resp.secondary_clicked()
+        || resp.drag_stopped_by(egui::PointerButton::Secondary);
+    let color = if erase {
+        Rgb::BLACK
+    } else if ed.editing_keys {
+        Rgb::WHITE
+    } else {
+        ed.brush
+    };
 
     match ed.mode {
         BrushMode::Region => region_interaction(ui, ed, &resp, &geom, rect, color),
@@ -735,7 +1110,9 @@ fn board_area(ui: &mut egui::Ui, ed: &mut Editor, layout: &[KeyPos], editable: b
             }
         }
         _ => {
-            if resp.drag_started() || (resp.clicked() && !ed.stroke_open) {
+            if resp.drag_started()
+                || ((resp.clicked() || resp.secondary_clicked()) && !ed.stroke_open)
+            {
                 ed.snapshot();
                 ed.stroke_open = true;
             }
@@ -744,7 +1121,7 @@ fn board_area(ui: &mut egui::Ui, ed: &mut Editor, layout: &[KeyPos], editable: b
                     ed.brush_at(led, color, layout);
                 }
             }
-            if resp.drag_stopped() || resp.clicked() {
+            if resp.drag_stopped() || resp.clicked() || resp.secondary_clicked() {
                 ed.stroke_open = false;
             }
         }
@@ -760,7 +1137,9 @@ fn region_interaction(
     color: Rgb,
 ) {
     if resp.drag_started() {
-        ed.region_start = resp.interact_pointer_pos();
+        ed.region_start = ui
+            .input(|i| i.pointer.press_origin())
+            .or(resp.interact_pointer_pos());
     }
     if let (Some(start), Some(cur)) = (ed.region_start, resp.interact_pointer_pos()) {
         let sel = egui::Rect::from_two_pos(start, cur).intersect(rect);
@@ -782,8 +1161,11 @@ fn region_interaction(
 }
 
 fn timeline_controls(ui: &mut egui::Ui, ed: &mut Editor) {
-    ui.horizontal(|ui| {
-        if ui.button(if ed.playing { "⏸" } else { "▶" }).clicked() {
+    ui.horizontal_wrapped(|ui| {
+        if ui
+            .button(if ed.playing { "Pause" } else { "Play" })
+            .clicked()
+        {
             ed.playing = !ed.playing;
         }
         ui.label("Duration");
@@ -800,10 +1182,10 @@ fn timeline_controls(ui: &mut egui::Ui, ed: &mut Editor) {
         }
         ui.checkbox(&mut ed.comp.loops, "Loop");
         ui.separator();
-        if ui.button("➕ Keyframe").clicked() {
+        if ui.button("Add keyframe").clicked() {
             ed.add_keyframe();
         }
-        if ui.button("🗑 Delete").clicked() {
+        if ui.button("Delete keyframe").clicked() {
             ed.delete_keyframe();
         }
         let total = ed.anim().map(|a| a.keyframes.len()).unwrap_or(0);
@@ -811,7 +1193,7 @@ fn timeline_controls(ui: &mut egui::Ui, ed: &mut Editor) {
     });
 
     if let Some(a) = ed.anim_mut() {
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             let mut interp = a.interpolate;
             if ui
                 .checkbox(&mut interp, "Blend between keyframes")
@@ -838,7 +1220,7 @@ fn keyframe_controls(ui: &mut egui::Ui, ed: &mut Editor) {
     };
 
     let mut changed = false;
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         ui.label("Keyframe time");
         if ui
             .add(
@@ -851,6 +1233,8 @@ fn keyframe_controls(ui: &mut egui::Ui, ed: &mut Editor) {
         {
             changed = true;
         }
+    });
+    ui.horizontal_wrapped(|ui| {
         ui.label("Ease out");
         egui::ComboBox::from_id_salt("kf-ease")
             .selected_text(e.label())
@@ -880,9 +1264,9 @@ fn generator_controls(ui: &mut egui::Ui, ed: &mut Editor) {
     // generator params mutably.
     if ui
         .button(if ed.playing {
-            "⏸ Pause"
+            "Pause preview"
         } else {
-            "▶ Preview"
+            "Play preview"
         })
         .clicked()
     {
@@ -890,7 +1274,7 @@ fn generator_controls(ui: &mut egui::Ui, ed: &mut Editor) {
     }
     let Some(g) = ed.gen_mut() else { return };
     let mut changed = false;
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         ui.label("Motion");
         egui::ComboBox::from_id_salt("gen-kind")
             .selected_text(g.kind.label())
@@ -901,7 +1285,10 @@ fn generator_controls(ui: &mut egui::Ui, ed: &mut Editor) {
                     }
                 }
             });
-        if g.kind.uses_direction() {
+    });
+    if g.kind.uses_direction() {
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Direction");
             egui::ComboBox::from_id_salt("gen-dir")
                 .selected_text(g.direction.label())
                 .show_ui(ui, |ui| {
@@ -914,35 +1301,40 @@ fn generator_controls(ui: &mut egui::Ui, ed: &mut Editor) {
                         }
                     }
                 });
-        }
-    });
+        });
+    }
 
     if g.kind.uses_colors() {
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label("Colours");
             let mut a = [g.color_a.r, g.color_a.g, g.color_a.b];
-            if ui.color_edit_button_srgb(&mut a).changed() {
+            if theme::color_edit(ui, "Motion foreground colour", &mut a).changed() {
                 g.color_a = Rgb::new(a[0], a[1], a[2]);
                 changed = true;
             }
             let mut b = [g.color_b.r, g.color_b.g, g.color_b.b];
-            if ui.color_edit_button_srgb(&mut b).changed() {
+            if theme::color_edit(ui, "Motion background colour", &mut b).changed() {
                 g.color_b = Rgb::new(b[0], b[1], b[2]);
                 changed = true;
             }
-            ui.weak("foreground / background");
+            theme::muted(ui, "foreground / background");
         });
     }
 
-    ui.horizontal(|ui| {
+    ui.spacing_mut().slider_width = (ui.available_width() - 155.0).clamp(70.0, 180.0);
+    ui.horizontal_wrapped(|ui| {
         ui.label("Width");
         changed |= ui
             .add(egui::Slider::new(&mut g.width, 0.05..=1.0))
             .changed();
+    });
+    ui.horizontal_wrapped(|ui| {
         ui.label("Passes");
         changed |= ui
             .add(egui::Slider::new(&mut g.cycles, 0.25..=8.0))
             .changed();
+    });
+    ui.horizontal_wrapped(|ui| {
         ui.label("Smoothness");
         changed |= ui.add(egui::Slider::new(&mut g.frames, 2..=120)).changed();
     });
@@ -1051,6 +1443,114 @@ fn sanitise(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn editor_layout_fits_compact_regular_and_large_workspaces() {
+        let layout = aula_protocol::f75::keymap::layout();
+        for (width, height, large_text) in [
+            (334.0, 440.0, false),
+            (514.0, 440.0, false),
+            (934.0, 650.0, false),
+            (1354.0, 780.0, false),
+            (450.0, 600.0, true),
+        ] {
+            let ctx = egui::Context::default();
+            theme::DARK.apply(&ctx);
+            if large_text {
+                let mut style = (*ctx.style()).clone();
+                for font in style.text_styles.values_mut() {
+                    font.size *= 1.4;
+                }
+                ctx.set_style(style);
+            }
+            let mut editor = Editor::new(126);
+            for n in 0..12 {
+                editor.comp.layers.push(Layer::generator(
+                    format!("Motion layer {n}"),
+                    GenParams::default(),
+                ));
+            }
+            // Two passes allow egui's scrollbars and wrap measurements to settle.
+            for (active, selecting) in [(0, false), (1, false), (1, true)] {
+                editor.active = active;
+                editor.editing_keys = selecting;
+                for _ in 0..2 {
+                    let _ = ctx.run(
+                        egui::RawInput {
+                            screen_rect: Some(egui::Rect::from_min_size(
+                                egui::Pos2::ZERO,
+                                egui::vec2(width, height),
+                            )),
+                            ..Default::default()
+                        },
+                        |ctx| {
+                            egui::CentralPanel::default().show(ctx, |ui| {
+                                show(
+                                    ui,
+                                    &mut editor,
+                                    &layout,
+                                    std::path::Path::new("animations"),
+                                    false,
+                                    false,
+                                );
+                                assert!(
+                                    ui.min_rect().right() <= width + 1.0,
+                                    "Editor overflows at width {width}: {:?}",
+                                    ui.min_rect()
+                                );
+                                assert!(ui.min_rect().bottom().is_finite());
+                            });
+                        },
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn mask_selection_has_history_and_does_not_paint_colours() {
+        let mut ed = Editor::new(4);
+        ed.editing_keys = true;
+        ed.snapshot();
+        ed.paint(1, Rgb::BLACK);
+        assert!(!ed.comp.layers[0].affects(1));
+        assert!(ed.comp.layers[0].affects(0));
+        assert!(ed.dirty);
+        ed.undo();
+        assert!(ed.comp.layers[0].affects(1));
+        ed.redo();
+        assert!(!ed.comp.layers[0].affects(1));
+        ed.paint(1, Rgb::WHITE);
+        ed.paint(999, Rgb::WHITE);
+        assert!(ed.comp.layers[0].affects(1));
+        assert!(base_anim(&ed).keyframes[0].color(1).is_black());
+    }
+
+    #[test]
+    fn static_layer_stays_fixed_and_painting_respects_its_mask() {
+        let mut ed = Editor::new(4);
+        ed.brush = Rgb::new(100, 20, 30);
+        ed.add_static_layer();
+        assert_eq!(ed.comp.layers[ed.active].blend, Blend::Normal);
+        assert_eq!(ed.anim().unwrap().keyframes.len(), 1);
+        assert!(ed.editing_keys);
+        ed.paint(0, Rgb::BLACK);
+        ed.editing_keys = false;
+        ed.fill_all(Rgb::WHITE);
+        ed.paint(0, Rgb::BLACK);
+        assert_eq!(
+            ed.anim().unwrap().keyframes[0].color(0),
+            Rgb::new(100, 20, 30)
+        );
+        assert_eq!(ed.anim().unwrap().keyframes[0].color(1), Rgb::WHITE);
+        let mut a = Frame::black(4);
+        let mut b = Frame::black(4);
+        ed.comp.sample(0.0, &[], &mut a);
+        ed.comp.sample(1.5, &[], &mut b);
+        assert_eq!(a, b);
+        assert!(a.get(0).is_black());
+        assert_eq!(a.get(1), Rgb::WHITE);
+    }
 
     fn base_anim(ed: &Editor) -> &Animation {
         match &ed.comp.layers[0].content {

@@ -156,6 +156,7 @@ impl Params {
         match self.values.get(id) {
             Some(Value::Int(v)) => *v,
             Some(Value::Float(v)) => *v as i64,
+            Some(Value::Choice(v)) => *v as i64,
             _ => fallback,
         }
     }
@@ -216,5 +217,7 @@ mod tests {
         assert_eq!(p.float("n", 0.0), 3.0);
         p.set("f", Value::Float(2.7));
         assert_eq!(p.int("f", 0), 2);
+        p.set("direction", Value::Choice(2));
+        assert_eq!(p.int("direction", 0), 2);
     }
 }

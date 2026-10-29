@@ -1,8 +1,10 @@
-//! USB HID protocol for AULA RGB keyboards.
+//! Native AULA RGB HID protocols and a cross-brand OpenRGB SDK client.
 //!
 //! Currently implements the **AULA F75** (`258a:010c`, Sinowealth 8051). The
 //! protocol was reverse-engineered from USBPcap captures of the vendor driver;
 //! see `docs/PROTOCOL.md` for the full write-up.
+//! Other keyboards can be controlled through [`openrgb::OpenRgbKeyboard`]
+//! and a separately running OpenRGB SDK server; see `docs/KEYBOARDS.md`.
 //!
 //! A 2.4 GHz receiver is a **separate USB device** with the receiver chipset's
 //! own VID/PID, so it cannot be found by looking for the keyboard's id. It is
@@ -20,7 +22,7 @@
 //! # Ok::<(), aula_protocol::Error>(())
 //! ```
 //!
-//! # Rules this crate enforces for you
+//! # Native AULA protocol rules
 //!
 //! These were expensive to discover and are easy to regress:
 //!
@@ -49,6 +51,7 @@ pub mod device;
 pub mod dongle;
 pub mod f75;
 pub mod keyboard;
+pub mod openrgb;
 pub mod transport;
 
 pub use color::{ChannelOrder, Rgb};
@@ -60,6 +63,9 @@ pub use transport::{Choice, Confidence, DeviceCandidate, ScanOptions};
 /// Errors this crate can produce.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("OpenRGB: {0}")]
+    OpenRgb(String),
+
     #[error("HID error: {0}")]
     Hid(#[from] hidapi::HidError),
 

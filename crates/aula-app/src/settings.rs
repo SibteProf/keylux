@@ -1,14 +1,10 @@
-//! Small persisted preferences.
-//!
-//! Deliberately tiny and hand-rolled rather than using eframe's storage: the
-//! only things worth remembering across runs are the window-close behaviour and
-//! whether minimising hides to the tray, and both need to be readable and
-//! hand-editable by a user who has trapped themselves behind a bad choice.
+//! Persisted device, window, and application lighting preferences.
 
 use std::path::PathBuf;
 
 use aula_protocol::DeviceId;
 use serde::{Deserialize, Serialize};
+use strum::EnumIter;
 
 /// What the window's close button does.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -25,6 +21,17 @@ pub enum CloseAction {
     Quit,
 }
 
+/// Persist the theme by name so more palettes can be added later.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, EnumIter, strum::Display,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ColorTheme {
+    #[default]
+    Dark,
+    Light,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -39,8 +46,8 @@ pub struct Settings {
     /// Write rate cap. The device clamps this to its own ceiling, so a value
     /// from an older or hand-edited file can only ever make things gentler.
     pub max_fps: u32,
-    /// Which keyboard to drive, as `"vid:pid"`. `None` means automatic, which
-    /// prefers the wired board.
+    /// Native `"vid:pid"` or an `"openrgb:..."` identity from SDK discovery.
+    /// `None` means automatic, which prefers native AULA hardware.
     ///
     /// Deliberately not a HID path: paths change on every replug and differ
     /// between USB ports, so a remembered one would be wrong by the next boot.
@@ -52,6 +59,13 @@ pub struct Settings {
     /// runs. Remembering it here means normal startup finds it again without
     /// ever probing unrecognised hardware on a timer.
     pub known_devices: Vec<String>,
+    /// Enable cross-brand control through a separately running OpenRGB server.
+    pub openrgb_enabled: bool,
+    /// A numeric socket address avoids blocking DNS on the render worker.
+    pub openrgb_endpoint: String,
+    pub app_lighting: crate::profiles::AppLighting,
+    pub color_theme: ColorTheme,
+    pub ui_scale: f32,
 }
 
 impl Default for Settings {
@@ -63,11 +77,43 @@ impl Default for Settings {
             max_fps: aula_protocol::f75::protocol::MAX_FPS,
             device: None,
             known_devices: Vec::new(),
+            openrgb_enabled: true,
+            openrgb_endpoint: aula_protocol::openrgb::DEFAULT_ENDPOINT.into(),
+            app_lighting: crate::profiles::AppLighting::default(),
+            color_theme: ColorTheme::Dark,
+            ui_scale: 1.0,
         }
     }
 }
 
 impl Settings {
+    pub fn target(&self) -> Option<String> {
+        if let Some(id) = self.pinned_device() {
+            return Some(id.to_string());
+        }
+        self.device
+            .as_ref()
+            .filter(|s| s.starts_with("openrgb:"))
+            .cloned()
+    }
+
+    pub fn remember_target(&mut self, target: String) {
+        if let Ok(id) = target.parse::<DeviceId>() {
+            self.remember_device(id);
+        } else {
+            self.device = Some(target);
+        }
+    }
+
+    pub fn endpoint(&self) -> Result<Option<std::net::SocketAddr>, String> {
+        if !self.openrgb_enabled {
+            return Ok(None);
+        }
+        self.openrgb_endpoint.parse().map(Some).map_err(|_| {
+            "OpenRGB address must be an IP and port, for example 127.0.0.1:6742".into()
+        })
+    }
+
     pub fn load() -> Self {
         let Some(path) = Self::path() else {
             return Self::default();
@@ -147,6 +193,8 @@ mod tests {
             max_fps: 12,
             device: Some("3554:fa09".into()),
             known_devices: vec!["3554:fa09".into()],
+            color_theme: ColorTheme::Light,
+            ..Default::default()
         };
         let json = serde_json::to_string(&s).unwrap();
         let back: Settings = serde_json::from_str(&json).unwrap();
@@ -156,6 +204,7 @@ mod tests {
         assert_eq!(back.max_fps, 12);
         assert_eq!(back.pinned_device(), "3554:fa09".parse().ok());
         assert_eq!(back.allow_list().len(), 1);
+        assert_eq!(back.color_theme, ColorTheme::Light);
     }
 
     /// A settings file written by an older build must not wipe the user's
@@ -169,6 +218,7 @@ mod tests {
         // "automatic", not "pinned to nothing".
         assert_eq!(partial.device, None);
         assert!(partial.known_devices.is_empty());
+        assert_eq!(partial.color_theme, ColorTheme::Dark);
 
         assert!(serde_json::from_str::<Settings>("not json").is_err());
     }
@@ -207,5 +257,34 @@ mod tests {
         s.unpin_device();
         assert_eq!(s.pinned_device(), None);
         assert_eq!(s.allow_list(), vec![id]);
+    }
+
+    #[test]
+    fn remote_selection_round_trips_without_becoming_a_hid_allow_list_entry() {
+        let mut settings = Settings::default();
+        settings.remember_target("openrgb:54657374:::".into());
+        settings.openrgb_endpoint = "[::1]:6742".into();
+        let back: Settings =
+            serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
+        assert_eq!(back.target(), settings.target());
+        assert!(back.allow_list().is_empty());
+        assert!(back.pinned_device().is_none());
+        assert_eq!(back.endpoint().unwrap().unwrap().to_string(), "[::1]:6742");
+        settings.openrgb_endpoint = "missing-port".into();
+        assert!(settings.endpoint().is_err());
+        settings.openrgb_enabled = false;
+        assert_eq!(settings.endpoint(), Ok(None));
+    }
+
+    #[test]
+    fn legacy_settings_keep_native_selection_and_get_the_default_sdk_address() {
+        let settings: Settings =
+            serde_json::from_str(r#"{"device":"0x258A:0x010C","max_fps":8}"#).unwrap();
+        assert_eq!(settings.target().as_deref(), Some("258a:010c"));
+        assert_eq!(settings.max_fps, 8);
+        assert_eq!(
+            settings.endpoint().unwrap().unwrap().to_string(),
+            "127.0.0.1:6742"
+        );
     }
 }

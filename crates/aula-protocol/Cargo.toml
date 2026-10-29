@@ -1,6 +1,6 @@
 [package]
 name = "aula-protocol"
-description = "USB HID protocol for AULA RGB keyboards (Sinowealth 8051)"
+description = "Native AULA keyboard HID protocol and cross-brand OpenRGB SDK client"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

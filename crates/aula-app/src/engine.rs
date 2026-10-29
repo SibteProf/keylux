@@ -8,19 +8,23 @@ use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use crate::backend::{self, Candidate, Device};
+use crate::profiles::{self, AppLighting, Foreground, ProfileStatus, Selection};
 use aula_effects::registry::{Registry, Source};
 use aula_effects::{EffectMeta, Params, RenderCtx};
 use aula_protocol::f75::keymap;
 use aula_protocol::f75::protocol as p;
-use aula_protocol::transport::{self, Choice};
-use aula_protocol::Keyboard;
-use aula_protocol::{ChannelOrder, DeviceId, Frame, KeyPos, Link, RgbDevice, ScanOptions};
+use aula_protocol::{DeviceId, Frame, KeyPos, Link, RgbDevice, ScanOptions};
 
 /// What the GUI asks the engine to do.
 pub enum Cmd {
     SelectEffect(usize),
     /// Whole parameter set, so UI and engine cannot drift apart.
-    SetParams(Params),
+    SetParams {
+        revision: u64,
+        params: Params,
+    },
+    ConfigureAppLighting(AppLighting),
     SetRunning(bool),
     /// Cap the write rate below the hardware ceiling.
     SetMaxFps(u32),
@@ -29,16 +33,20 @@ pub enum Cmd {
     /// Stream this exact frame instead of the selected effect — the timeline
     /// editor's "send to keyboard" preview. `None` hands control back to the
     /// effect engine.
-    LivePreview(Option<Frame>),
+    LivePreview(Option<(String, Frame)>),
     /// Drive this device, or `None` for automatic (wired preferred).
-    SelectDevice(Option<DeviceId>),
+    SelectDevice(Option<String>),
+    ConfigureOpenRgb(Result<Option<std::net::SocketAddr>, String>),
     /// Re-enumerate devices now. `deep` also probes unrecognised hardware and
     /// is only ever sent because the user asked for it.
     ScanDevices {
         deep: bool,
     },
     Shutdown,
-    WriteToNvram(Frame),
+    WriteToNvram {
+        target: String,
+        frame: Frame,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -46,7 +54,9 @@ pub enum DeviceStatus {
     Connected {
         name: String,
         path: String,
-        id: DeviceId,
+        id: String,
+        can_save: bool,
+        has_matrix: bool,
         /// False when nothing has confirmed this device, so lighting works but
         /// a mode change is refused.
         can_change_mode: bool,
@@ -57,7 +67,7 @@ pub enum DeviceStatus {
     /// exactly what it was told, and the UI can offer a way out rather than an
     /// error message.
     Waiting {
-        pinned: DeviceId,
+        pinned: String,
         label: String,
     },
     Disconnected(String),
@@ -66,7 +76,7 @@ pub enum DeviceStatus {
 /// One row in the device picker.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DeviceEntry {
-    pub id: DeviceId,
+    pub id: String,
     pub label: String,
     pub link: Link,
     pub confirmed: bool,
@@ -93,6 +103,9 @@ pub struct Shared {
     pub status: DeviceStatus,
     pub effects: Vec<EffectInfo>,
     pub selected: usize,
+    pub params: Params,
+    pub selection_revision: u64,
+    pub profile_status: ProfileStatus,
     /// Script load failures, newest last.
     pub errors: Vec<String>,
     /// Why the *selected* effect's last frame failed, if it did. Kept apart
@@ -103,7 +116,8 @@ pub struct Shared {
     pub frames_sent: u64,
     /// Devices the last scan found, for the picker.
     pub devices: Vec<DeviceEntry>,
-    pub pinned: Option<DeviceId>,
+    pub pinned: Option<String>,
+    pub discovery_warnings: Vec<String>,
     /// A scan is in flight; the picker shows a spinner.
     pub scanning: bool,
     /// The connected device's own frame-rate ceiling. The wireless link is
@@ -126,12 +140,16 @@ impl Shared {
             status: DeviceStatus::Disconnected("starting…".into()),
             effects: Vec::new(),
             selected: 0,
+            params: Params::default(),
+            selection_revision: 0,
+            profile_status: ProfileStatus::default(),
             errors: Vec::new(),
             script_error: None,
             running: true,
             frames_sent: 0,
             devices: Vec::new(),
             pinned: None,
+            discovery_warnings: Vec::new(),
             scanning: false,
             max_fps_ceiling: p::MAX_FPS,
             link: None,
@@ -145,23 +163,46 @@ pub struct Engine {
     tx: Sender<Cmd>,
 }
 
+struct WorkerConfig {
+    effects_dir: std::path::PathBuf,
+    pinned: Option<String>,
+    allow: Vec<DeviceId>,
+    endpoint: Result<Option<std::net::SocketAddr>, String>,
+    app_lighting: AppLighting,
+}
+
 impl Engine {
     /// Spawn the engine thread.
     pub fn spawn(
         effects_dir: std::path::PathBuf,
-        pinned: Option<DeviceId>,
+        pinned: Option<String>,
         allow: Vec<DeviceId>,
+        endpoint: Result<Option<std::net::SocketAddr>, String>,
+        app_lighting: AppLighting,
         repaint: impl Fn() + Send + 'static,
     ) -> Self {
         let mut initial = Shared::new();
-        initial.pinned = pinned;
+        initial.pinned = pinned.clone();
         let shared = Arc::new(Mutex::new(initial));
         let (tx, rx) = mpsc::channel();
         let worker_shared = Arc::clone(&shared);
 
         std::thread::Builder::new()
             .name("aula-render".into())
-            .spawn(move || run(worker_shared, rx, effects_dir, pinned, allow, repaint))
+            .spawn(move || {
+                run(
+                    worker_shared,
+                    rx,
+                    WorkerConfig {
+                        effects_dir,
+                        pinned,
+                        allow,
+                        endpoint,
+                        app_lighting,
+                    },
+                    repaint,
+                )
+            })
             .expect("spawn render thread");
 
         Self { shared, tx }
@@ -187,11 +228,16 @@ impl Drop for Engine {
 fn run(
     shared: Arc<Mutex<Shared>>,
     rx: Receiver<Cmd>,
-    effects_dir: std::path::PathBuf,
-    mut pinned: Option<DeviceId>,
-    allow: Vec<DeviceId>,
+    config: WorkerConfig,
     repaint: impl Fn() + Send,
 ) {
+    let WorkerConfig {
+        effects_dir,
+        mut pinned,
+        allow,
+        mut endpoint,
+        mut app_lighting,
+    } = config;
     let anim_dir = effects_dir
         .parent()
         .map(|p| p.join("animations"))
@@ -199,10 +245,19 @@ fn run(
     let mut reg = Registry::with_all(&effects_dir, &anim_dir);
     publish_effects(&shared, &reg);
 
-    let mut device: Option<Keyboard> = None;
+    let mut device: Option<Device> = None;
     let mut last_open_attempt: Option<Instant> = None;
     let mut selected = 0usize;
     let mut params = current_params(&reg, selected);
+    if let Some(i) = reg.find(&app_lighting.default.effect) {
+        selected = i;
+        params = app_lighting.default.restore(&reg.entries[i].meta.params);
+    }
+    publish_selection(&shared, selected, &params);
+    let mut applied_profile: Option<Selection> = None;
+    let mut last_foreground_poll: Option<Instant> = None;
+    let mut restore_default = false;
+    let mut foreground_detector = profiles::ForegroundDetector::default();
     let mut effect_start = Instant::now();
     let mut running = true;
     let mut max_fps = p::MAX_FPS;
@@ -218,10 +273,10 @@ fn run(
         allow,
         ..Default::default()
     };
-    let mut candidates = Vec::new();
+    let mut discovery_cache = backend::DiscoveryCache::default();
     // Enumerating is cheap; probing means opening handles, so it only happens
     // when the set of plugged-in HID devices has actually changed.
-    let mut last_enum: Option<Vec<String>> = None;
+    let mut needs_scan = true;
     // A radio link times out the occasional write where a cable never would.
     // Dropping to "disconnected" on the first one would strobe the status bar
     // and thrash the reconnect loop.
@@ -238,11 +293,28 @@ fn run(
                         selected = i;
                         params = current_params(&reg, selected);
                         effect_start = Instant::now();
-                        let mut s = shared.lock().unwrap();
-                        s.selected = selected;
+                        publish_selection(&shared, selected, &params);
+                        applied_profile = None;
                     }
                 }
-                Ok(Cmd::SetParams(p)) => params = p,
+                Ok(Cmd::SetParams {
+                    revision,
+                    params: p,
+                }) => {
+                    // A focus switch can happen while the UI is drawing. Never
+                    // write old sliders into the newly activated profile.
+                    if shared.lock().unwrap().selection_revision == revision {
+                        params = p;
+                        publish_selection(&shared, selected, &params);
+                        applied_profile = None;
+                    }
+                }
+                Ok(Cmd::ConfigureAppLighting(config)) => {
+                    restore_default = !config.enabled;
+                    app_lighting = config;
+                    applied_profile = None;
+                    last_foreground_poll = None;
+                }
                 Ok(Cmd::SetRunning(r)) => {
                     running = r;
                     shared.lock().unwrap().running = r;
@@ -255,7 +327,7 @@ fn run(
                 }
                 Ok(Cmd::SelectDevice(p)) => {
                     pinned = p;
-                    if let Some(id) = p {
+                    if let Some(id) = pinned.as_ref().and_then(|p| p.parse::<DeviceId>().ok()) {
                         if !opts.allow.contains(&id) {
                             opts.allow.push(id);
                         }
@@ -263,9 +335,17 @@ fn run(
                     // Drop the handle so the next pass reconnects to whatever
                     // was just asked for, and force a fresh probe.
                     device = None;
-                    last_enum = None;
+                    needs_scan = true;
                     last_open_attempt = None;
-                    shared.lock().unwrap().pinned = pinned;
+                    live_preview = None;
+                    shared.lock().unwrap().pinned = pinned.clone();
+                }
+                Ok(Cmd::ConfigureOpenRgb(value)) => {
+                    endpoint = value;
+                    device = None;
+                    live_preview = None;
+                    needs_scan = true;
+                    last_open_attempt = None;
                 }
                 Ok(Cmd::ScanDevices { deep }) => {
                     shared.lock().unwrap().scanning = true;
@@ -277,21 +357,40 @@ fn run(
                     };
                     // Runs on this thread, not the UI thread: a deep scan opens
                     // handles and can take a noticeable moment.
-                    candidates = Keyboard::discover(&wide).unwrap_or_default();
-                    last_enum = transport::enumeration_signature().ok();
-                    publish_devices(&shared, &candidates, pinned);
+                    let found = discover(&mut discovery_cache, &wide, &endpoint, true);
+                    let candidates = found.candidates;
+                    shared.lock().unwrap().discovery_warnings = found.warnings;
+                    publish_devices(&shared, &candidates, pinned.as_deref());
+                    needs_scan = false;
                     let mut s = shared.lock().unwrap();
                     s.scanning = false;
                 }
                 Ok(Cmd::Rescan) => {
+                    let id = reg.entries.get(selected).map(|e| e.meta.id.clone());
                     reg = Registry::with_all(&effects_dir, &anim_dir);
-                    selected = selected.min(reg.len().saturating_sub(1));
-                    params = current_params(&reg, selected);
+                    selected = id.as_deref().and_then(|id| reg.find(id)).unwrap_or(0);
+                    params = merge_params(&reg, selected, params);
                     publish_effects(&shared, &reg);
+                    publish_selection(&shared, selected, &params);
+                    applied_profile = None;
                 }
-                Ok(Cmd::LivePreview(frame)) => live_preview = frame,
-                Ok(Cmd::WriteToNvram(frame)) => {
+                Ok(Cmd::LivePreview(frame)) => {
+                    live_preview = frame.and_then(|(target, frame)| {
+                        device
+                            .as_ref()
+                            .filter(|kb| kb.id() == target)
+                            .map(|_| frame)
+                    });
+                }
+                Ok(Cmd::WriteToNvram { target, frame }) => {
                     let result = match device.as_mut() {
+                        Some(kb) if kb.id() != target => Err(
+                            "The selected keyboard changed; try again on the intended keyboard"
+                                .into(),
+                        ),
+                        Some(kb) if frame.len() != kb.led_count() => {
+                            Err("The frame belongs to a different keyboard layout".into())
+                        }
                         Some(kb) => kb.set_static(&frame).map_err(|e| e.to_string()),
                         None => Err("No device connected".into()),
                     };
@@ -305,13 +404,13 @@ fn run(
         // ---- hot reload: pick up edited scripts ----
         if last_rescan.elapsed() > Duration::from_millis(750) {
             last_rescan = Instant::now();
-            let before = reg.len();
+            let id = reg.entries.get(selected).map(|e| e.meta.id.clone());
             if reg.refresh() {
-                if reg.len() != before {
-                    selected = selected.min(reg.len().saturating_sub(1));
-                }
+                selected = id.as_deref().and_then(|id| reg.find(id)).unwrap_or(0);
                 params = merge_params(&reg, selected, params);
                 publish_effects(&shared, &reg);
+                publish_selection(&shared, selected, &params);
+                applied_profile = None;
             }
         }
 
@@ -323,19 +422,20 @@ fn run(
             if due {
                 last_open_attempt = Some(Instant::now());
 
-                // Re-probe only when something was plugged or unplugged.
-                let sig = transport::enumeration_signature().ok();
-                if sig != last_enum {
-                    last_enum = sig;
-                    candidates = Keyboard::discover(&opts).unwrap_or_default();
-                    publish_devices(&shared, &candidates, pinned);
-                }
+                // OpenRGB can start or rescan without the HID device set changing.
+                // Rediscover on every disconnected retry, as well as manual scans.
+                let found = discover(&mut discovery_cache, &opts, &endpoint, needs_scan);
+                let candidates = found.candidates;
+                shared.lock().unwrap().discovery_warnings = found.warnings;
+                publish_devices(&shared, &candidates, pinned.as_deref());
+                needs_scan = false;
 
-                match transport::choose(&candidates, pinned) {
-                    Choice::Use(i) => {
+                match backend::choose(&candidates, pinned.as_deref()) {
+                    Some(i) => {
                         let cand = candidates[i].clone();
-                        match Keyboard::open_candidate(&cand, ChannelOrder::Rgb) {
+                        match Device::open(&cand, endpoint.as_ref().ok().copied().flatten()) {
                             Ok(mut kb) => {
+                                let ceiling = kb.fps_ceiling();
                                 kb.set_max_fps(max_fps);
                                 // Once, before any streaming.
                                 let mode = kb.ensure_per_key_mode();
@@ -347,13 +447,16 @@ fn run(
                                             path: kb.hid_path().to_string(),
                                             id: kb.id(),
                                             can_change_mode: kb.can_change_mode(),
+                                            can_save: kb.can_save(),
+                                            has_matrix: kb.has_matrix(),
                                         };
                                         s.layout = kb.layout().to_vec();
                                         s.frame = Frame::black(kb.led_count());
-                                        s.max_fps_ceiling = kb.max_fps();
+                                        s.max_fps_ceiling = ceiling;
                                         s.link = Some(kb.link());
                                         drop(s);
                                         write_failures = 0;
+                                        live_preview = None;
                                         device = Some(kb);
                                     }
                                     Err(e) => {
@@ -364,7 +467,7 @@ fn run(
                             Err(e) => {
                                 // The path went stale between enumerating and
                                 // opening; a fresh probe is the fix.
-                                last_enum = None;
+                                needs_scan = true;
                                 shared.lock().unwrap().status =
                                     DeviceStatus::Disconnected(e.to_string());
                             }
@@ -373,26 +476,65 @@ fn run(
                     // A pin is never silently substituted. Lighting the wired
                     // board because the pinned receiver vanished would look
                     // like the app ignoring the setting.
-                    Choice::PinnedMissing(id) => {
+                    None if pinned.is_some() => {
+                        let id = pinned.as_ref().unwrap();
                         let label = shared
                             .lock()
                             .unwrap()
                             .devices
                             .iter()
-                            .find(|d| d.id == id)
+                            .find(|d| &d.id == id)
                             .map(|d| d.label.clone())
                             .unwrap_or_else(|| id.to_string());
-                        shared.lock().unwrap().status = DeviceStatus::Waiting { pinned: id, label };
-                    }
-                    Choice::None => {
-                        let e = aula_protocol::Error::NotFound {
-                            searched: p::KNOWN.len()
-                                + aula_protocol::dongle::KNOWN.len()
-                                + opts.allow.len(),
+                        shared.lock().unwrap().status = DeviceStatus::Waiting {
+                            pinned: id.clone(),
+                            label,
                         };
-                        shared.lock().unwrap().status = DeviceStatus::Disconnected(e.to_string());
+                    }
+                    None => {
+                        shared.lock().unwrap().status = DeviceStatus::Disconnected(
+                            "No keyboard found. Connect an AULA F75, or start OpenRGB's SDK server for other models. See Settings for scan details.".into());
                     }
                 }
+            }
+        }
+
+        // Independent of painting, pause, and connection state: profiles keep
+        // following focus in the tray and apply on the next hardware reconnect.
+        if restore_default
+            || (profiles::supported()
+                && app_lighting.enabled
+                && last_foreground_poll
+                    .map(|t| t.elapsed() >= Duration::from_millis(250))
+                    .unwrap_or(true))
+        {
+            last_foreground_poll = Some(Instant::now());
+            let foreground: Option<String> = if restore_default {
+                None
+            } else {
+                match foreground_detector.poll() {
+                    #[cfg(any(target_os = "windows", target_os = "linux"))]
+                    Foreground::Application(path) => Some(path),
+                    #[cfg(any(target_os = "windows", target_os = "linux"))]
+                    Foreground::OwnWindow => None,
+                    Foreground::Unavailable => None,
+                }
+            };
+            if restore_default || foreground.is_some() {
+                let wireless = device.as_ref().is_some_and(|kb| kb.link() == Link::Dongle);
+                if let Some((selection, status)) =
+                    profiles::resolve(&app_lighting, &reg, foreground.as_deref(), wireless)
+                {
+                    if applied_profile.as_ref() != Some(&selection) {
+                        selected = selection.index;
+                        params = selection.preset.restore(&reg.entries[selected].meta.params);
+                        effect_start = Instant::now();
+                        publish_selection(&shared, selected, &params);
+                        applied_profile = Some(selection);
+                    }
+                    shared.lock().unwrap().profile_status = status;
+                }
+                restore_default = false;
             }
         }
 
@@ -405,10 +547,28 @@ fn run(
         // Live preview from the editor overrides everything, paused or not: the
         // user is actively painting and expects the board to follow the brush.
         if let Some(preview) = live_preview.clone() {
-            if kb.stream(&preview).is_ok() {
-                write_failures = 0;
-                let mut s = shared.lock().unwrap();
-                s.frame = preview;
+            if preview.len() != kb.led_count() {
+                live_preview = None;
+                shared.lock().unwrap().errors.push("Preview size does not match the selected keyboard; reopen or recreate the animation.".into());
+                continue;
+            }
+            match kb.stream(&preview) {
+                Ok(()) => {
+                    write_failures = 0;
+                    shared.lock().unwrap().frame = preview;
+                }
+                Err(e) => {
+                    write_failures += 1;
+                    if write_failures >= WRITE_FAILURES_BEFORE_DISCONNECT {
+                        let mut s = shared.lock().unwrap();
+                        s.status = DeviceStatus::Disconnected(e.to_string());
+                        s.link = None;
+                        s.fps = 0.0;
+                        device = None;
+                        live_preview = None;
+                        needs_scan = true;
+                    }
+                }
             }
             repaint();
             std::thread::sleep(Duration::from_millis(2));
@@ -425,8 +585,8 @@ fn run(
                 selected = i;
                 params = current_params(&reg, selected);
                 effect_start = Instant::now();
-                let mut s = shared.lock().unwrap();
-                s.selected = selected;
+                publish_selection(&shared, selected, &params);
+                applied_profile = None;
             }
         }
 
@@ -501,7 +661,7 @@ fn run(
                     write_failures = 0;
                     // Whatever is plugged in may have changed, so the next
                     // open attempt must probe rather than reuse the old list.
-                    last_enum = None;
+                    needs_scan = true;
                 }
             }
         }
@@ -518,18 +678,22 @@ fn run(
 ///
 /// A pinned device that is not plugged in keeps its row, marked absent: a pin
 /// that silently disappears from the list looks like the app forgetting it.
-fn publish_devices(
-    shared: &Arc<Mutex<Shared>>,
-    candidates: &[aula_protocol::DeviceCandidate],
-    pinned: Option<DeviceId>,
-) {
+fn publish_selection(shared: &Arc<Mutex<Shared>>, selected: usize, params: &Params) {
+    let mut state = shared.lock().unwrap();
+    state.selected = selected;
+    state.params = params.clone();
+    state.selection_revision = state.selection_revision.wrapping_add(1);
+    state.script_error = None;
+}
+
+fn publish_devices(shared: &Arc<Mutex<Shared>>, candidates: &[Candidate], pinned: Option<&str>) {
     let mut devices: Vec<DeviceEntry> = candidates
         .iter()
         .map(|c| DeviceEntry {
-            id: c.id,
+            id: c.id(),
             label: c.label(),
-            link: c.link,
-            confirmed: c.confirmed,
+            link: c.link(),
+            confirmed: c.confirmed(),
             present: true,
         })
         .collect();
@@ -537,9 +701,26 @@ fn publish_devices(
     if let Some(id) = pinned {
         if !devices.iter().any(|d| d.id == id) {
             devices.push(DeviceEntry {
-                id,
-                label: format!("{id}"),
-                link: Link::Dongle,
+                id: id.to_string(),
+                label: shared
+                    .lock()
+                    .unwrap()
+                    .devices
+                    .iter()
+                    .find(|d| d.id == id)
+                    .map(|d| d.label.clone())
+                    .unwrap_or_else(|| {
+                        if id.starts_with("openrgb:") {
+                            "Selected OpenRGB keyboard".into()
+                        } else {
+                            id.to_string()
+                        }
+                    }),
+                link: if id.starts_with("openrgb:") {
+                    Link::OpenRgb
+                } else {
+                    Link::Unknown
+                },
                 confirmed: false,
                 present: false,
             });
@@ -548,7 +729,20 @@ fn publish_devices(
 
     let mut s = shared.lock().unwrap();
     s.devices = devices;
-    s.pinned = pinned;
+    s.pinned = pinned.map(str::to_string);
+}
+
+fn discover(
+    cache: &mut backend::DiscoveryCache,
+    opts: &ScanOptions,
+    endpoint: &Result<Option<std::net::SocketAddr>, String>,
+    force: bool,
+) -> backend::Discovery {
+    let mut found = cache.scan(opts, endpoint.as_ref().ok().copied().flatten(), force);
+    if let Err(e) = endpoint {
+        found.warnings.push(e.clone());
+    }
+    found
 }
 
 fn publish_effects(shared: &Arc<Mutex<Shared>>, reg: &Registry) {

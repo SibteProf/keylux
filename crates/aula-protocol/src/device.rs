@@ -64,6 +64,8 @@ pub enum Link {
     #[default]
     Wired,
     Dongle,
+    /// Controlled by a local OpenRGB SDK server; transport is managed there.
+    OpenRgb,
     /// Found by a scan of hardware that is not in any known-device list.
     Unknown,
 }
@@ -74,6 +76,7 @@ impl Link {
         match self {
             Link::Wired => "wired",
             Link::Dongle => "2.4 GHz dongle",
+            Link::OpenRgb => "OpenRGB",
             Link::Unknown => "unrecognised link",
         }
     }
@@ -84,9 +87,9 @@ impl Link {
 /// `x` is the key centre in 1u units from the left edge, `row` is the row from
 /// the top. Effects sample these so animations travel across the board in real
 /// space rather than in wiring order.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct KeyPos {
-    pub name: &'static str,
+    pub name: String,
     pub row: u8,
     pub x: f32,
     /// Key width in 1u units. Effects use this to skip oversized keys — a
@@ -175,10 +178,11 @@ pub trait RgbDevice {
     /// Physical geometry, one entry per real key.
     fn layout(&self) -> &[KeyPos];
 
-    /// Highest frame rate that is safe to sustain.
+    /// Configured streaming ceiling, clamped to the backend's maximum.
     ///
-    /// This is a hardware limit, not a preference: writing faster starves the
-    /// keyboard's key-scanning loop and it stops responding to keypresses.
+    /// Native AULA limits are based on hardware behavior: excessive writes
+    /// starve key scanning. OpenRGB uses a conservative cap because the SDK
+    /// does not report each device's measured maximum.
     fn max_fps(&self) -> u32;
 
     /// Put the board into the mode where host per-key colours are rendered.
@@ -187,7 +191,8 @@ pub trait RgbDevice {
     /// non-volatile config, so call it once before streaming — never per frame.
     fn ensure_per_key_mode(&mut self) -> Result<bool>;
 
-    /// Write a single frame that persists. Not for animation.
+    /// Write a single frame that persists. Not for animation. Backends without
+    /// permanent storage support return an error instead of claiming success.
     fn set_static(&mut self, frame: &Frame) -> Result<()>;
 
     /// Push one animation frame. Safe to call repeatedly at up to `max_fps`.
