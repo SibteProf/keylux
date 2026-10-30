@@ -142,14 +142,15 @@ pub const PACKET_GAP_MS: u64 = 13;
 /// it: once it believes the board is correct it goes silent, so the cache still
 /// says "already showing that" and nothing ever corrects it.
 ///
-/// The interval is short because a battery keyboard appears to DIM its LEDs
-/// when the host stops talking. At two seconds a static colour visibly pulsed:
-/// dim, then bright again as the resend landed, once per interval. Keeping the
-/// gap under the dimming timeout holds the brightness steady.
+/// At two seconds a static colour visibly pulsed. A 700 ms interval improved
+/// this, but hardware testing still found occasional returns to the firmware
+/// effect before the next resend. Try 250 ms to shorten that recovery gap.
+/// This is a refresh policy, not a measured firmware timeout; the receiver's
+/// chunk budget and packet spacing still govern every send.
 ///
 /// This only fires when nothing changed, so it costs nothing during an
 /// animation and never interrupts one.
-pub const KEEPALIVE_MS: u64 = 700;
+pub const KEEPALIVE_MS: u64 = 250;
 
 /// The link's actual capacity, in 20-byte chunks per second.
 ///

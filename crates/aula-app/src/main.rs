@@ -13,6 +13,7 @@ mod board;
 mod cli;
 mod editor;
 mod engine;
+mod icon;
 mod profiles;
 mod settings;
 mod startup;
