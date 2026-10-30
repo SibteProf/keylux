@@ -161,6 +161,7 @@ impl Shared {
 pub struct Engine {
     pub shared: Arc<Mutex<Shared>>,
     tx: Sender<Cmd>,
+    worker: Option<std::thread::JoinHandle<()>>,
 }
 
 struct WorkerConfig {
@@ -187,7 +188,7 @@ impl Engine {
         let (tx, rx) = mpsc::channel();
         let worker_shared = Arc::clone(&shared);
 
-        std::thread::Builder::new()
+        let worker = std::thread::Builder::new()
             .name("aula-render".into())
             .spawn(move || {
                 run(
@@ -205,7 +206,11 @@ impl Engine {
             })
             .expect("spawn render thread");
 
-        Self { shared, tx }
+        Self {
+            shared,
+            tx,
+            worker: Some(worker),
+        }
     }
 
     pub fn send(&self, cmd: Cmd) {
@@ -222,6 +227,12 @@ impl Engine {
 impl Drop for Engine {
     fn drop(&mut self) {
         let _ = self.tx.send(Cmd::Shutdown);
+        // Shutdown is handled between complete frames. In particular, a radio
+        // frame spans multiple HID reports: letting the process exit with this
+        // thread detached can strand the keyboard midway through an update.
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
     }
 }
 
@@ -809,4 +820,28 @@ fn merge_params(reg: &Registry, idx: usize, old: Params) -> Params {
         }
     }
     fresh
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    #[test]
+    fn dropping_engine_waits_for_worker_shutdown() {
+        let (tx, rx) = mpsc::channel();
+        let finished = Arc::new(AtomicBool::new(false));
+        let worker_finished = Arc::clone(&finished);
+        let worker = std::thread::spawn(move || {
+            assert!(matches!(rx.recv().unwrap(), Cmd::Shutdown));
+            worker_finished.store(true, Ordering::SeqCst);
+        });
+        let engine = Engine {
+            shared: Arc::new(Mutex::new(Shared::new())),
+            tx,
+            worker: Some(worker),
+        };
+        drop(engine);
+        assert!(finished.load(Ordering::SeqCst));
+    }
 }

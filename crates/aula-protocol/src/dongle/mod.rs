@@ -301,35 +301,56 @@ impl Dongle {
     /// fit — cost is `4 bytes per distinct colour, plus one per lit key`, so a
     /// solid board is 84 bytes and a six-colour one is 104.
     ///
-    /// Dark keys are simply omitted, which is free: not mentioning a key is
-    /// exactly how the protocol turns it off.
+    /// Dark keys are omitted from mixed frames: not mentioning a key turns it
+    /// off. An entirely dark board needs an explicit black group so there is
+    /// still a message to send and refresh.
     fn plan(&self, frame: &Frame) -> Vec<p::Group> {
-        let mut by_colour: BTreeMap<(u8, u8, u8), Vec<u8>> = BTreeMap::new();
-        for k in &self.layout {
-            if k.led > usize::from(u8::MAX) {
-                continue;
-            }
-            let want = quantise_with(frame.get(k.led), self.hue_steps);
-            if want == Rgb::BLACK {
-                continue;
-            }
-            by_colour
-                .entry((want.r, want.g, want.b))
-                .or_default()
-                .push(k.led as u8);
-        }
-        // Largest runs first: if the frame ever does overflow the message, the
-        // most visible part of it survives.
-        let mut groups: Vec<p::Group> = by_colour
-            .into_iter()
-            .map(|((r, g, b), leds)| p::Group {
-                color: Rgb::new(r, g, b),
-                leds,
-            })
-            .collect();
-        groups.sort_by_key(|g| std::cmp::Reverse(g.leds.len()));
-        groups
+        plan_frame(&self.layout, frame, self.hue_steps)
     }
+}
+
+fn plan_frame(layout: &[KeyPos], frame: &Frame, hue_steps: f32) -> Vec<p::Group> {
+    let mut by_colour: BTreeMap<(u8, u8, u8), Vec<u8>> = BTreeMap::new();
+    for k in layout {
+        if k.led > usize::from(u8::MAX) {
+            continue;
+        }
+        let want = quantise_with(frame.get(k.led), hue_steps);
+        if want == Rgb::BLACK {
+            continue;
+        }
+        by_colour
+            .entry((want.r, want.g, want.b))
+            .or_default()
+            .push(k.led as u8);
+    }
+    // Omitting dark keys works only when there is a lighting message to
+    // send. An entirely black frame otherwise encodes to nothing, leaving
+    // the previous colours up and preventing every subsequent keepalive.
+    // Use an ordinary black colour group, including on defensive resends.
+    if by_colour.is_empty() {
+        let leds: Vec<u8> = layout
+            .iter()
+            .filter_map(|k| u8::try_from(k.led).ok())
+            .collect();
+        if !leds.is_empty() {
+            return vec![p::Group {
+                color: Rgb::BLACK,
+                leds,
+            }];
+        }
+    }
+    // Largest runs first: if the frame ever does overflow the message, the
+    // most visible part of it survives.
+    let mut groups: Vec<p::Group> = by_colour
+        .into_iter()
+        .map(|((r, g, b), leds)| p::Group {
+            color: Rgb::new(r, g, b),
+            leds,
+        })
+        .collect();
+    groups.sort_by_key(|g| std::cmp::Reverse(g.leds.len()));
+    groups
 }
 
 impl RgbDevice for Dongle {
@@ -450,6 +471,41 @@ pub fn open(extra: &[DeviceId]) -> Result<Dongle> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_black_frame_sends_a_complete_lighting_message() {
+        let layout = keymap::layout();
+        let groups = plan_frame(&layout, &Frame::black(128), HUE_STEPS);
+        let (payload, sent) = p::encode_groups(&groups, p::MAX_PAYLOAD);
+        assert_eq!(sent, groups);
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].color, Rgb::BLACK);
+        assert_eq!(
+            sent[0].leds,
+            layout.iter().map(|k| k.led as u8).collect::<Vec<_>>()
+        );
+        let reports = p::chunk(p::cmd::LIGHTING, &payload);
+        assert!(
+            !reports.is_empty(),
+            "off must send data on apply and keepalive"
+        );
+        assert!(reports.iter().all(|r| r[1] == p::cmd::LIGHTING));
+    }
+
+    #[test]
+    fn a_mixed_frame_omits_dark_keys_but_keeps_lit_keys() {
+        let layout = keymap::layout();
+        let mut frame = Frame::black(128);
+        frame.set(layout[0].led, Rgb::new(255, 0, 0));
+        let groups = plan_frame(&layout, &frame, HUE_STEPS);
+        assert_eq!(
+            groups,
+            vec![p::Group {
+                color: Rgb::new(255, 0, 0),
+                leds: vec![layout[0].led as u8],
+            }]
+        );
+    }
 
     /// `plan` is the whole design, so it is tested directly against a layout
     /// rather than through a device.
