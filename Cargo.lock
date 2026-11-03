@@ -463,7 +463,7 @@ dependencies = [
 
 [[package]]
 name = "aula-app"
-version = "0.4.1"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "aula-effects",
@@ -485,7 +485,7 @@ dependencies = [
 
 [[package]]
 name = "aula-effects"
-version = "0.4.1"
+version = "0.5.1"
 dependencies = [
  "aula-protocol",
  "image",
@@ -497,7 +497,7 @@ dependencies = [
 
 [[package]]
 name = "aula-protocol"
-version = "0.4.1"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "hidapi",

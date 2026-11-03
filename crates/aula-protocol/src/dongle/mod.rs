@@ -114,18 +114,48 @@ pub struct Dongle {
     ///
     /// Compared all-or-nothing: the unit of transmission is the entire frame,
     /// so a per-key comparison would have no meaning.
-    shown: Vec<Rgb>,
+    cache: FrameCache,
     last_tick: Option<Instant>,
-    /// When the board was last painted, for the keepalive.
-    last_full: Option<Instant>,
     tick: Duration,
     /// Inter-chunk spacing. Defaults to the vendor's measured minimum.
     gap: Duration,
     /// Hue quantisation steps. More means smoother-looking motion and a bigger,
     /// slower frame.
     hue_steps: f32,
-    /// Chunks the last frame cost, which sets how long the next must wait.
+}
+
+#[derive(Default)]
+struct FrameCache {
+    shown: Vec<Rgb>,
+    last_full: Option<Instant>,
     last_chunks: usize,
+}
+
+impl FrameCache {
+    fn due(&self, now: Instant) -> bool {
+        self.last_full
+            .map(|started| {
+                now.saturating_duration_since(started) >= Duration::from_millis(p::KEEPALIVE_MS)
+            })
+            .unwrap_or(true)
+    }
+
+    fn begin_send(&mut self, payload_len: usize) {
+        self.last_chunks = payload_len.div_ceil(p::CHUNK_PAYLOAD);
+        self.shown.clear();
+        self.last_full = None;
+    }
+
+    fn complete_send(&mut self, started: Option<Instant>, shown: Vec<Rgb>) {
+        self.last_full = started;
+        self.shown = shown;
+    }
+}
+
+fn rate_period(tick: Duration, chunks: usize) -> Duration {
+    tick.max(Duration::from_micros(
+        (chunks as u64 * 1_000_000).div_ceil(p::MAX_CHUNKS_PER_SEC.max(1)),
+    ))
 }
 
 impl Dongle {
@@ -142,13 +172,11 @@ impl Dongle {
             name: format!("{MODEL} ({})", Link::Dongle.suffix()),
             // Nothing is known about what the board is showing until we have
             // painted it, so the first frame must go out in full.
-            shown: Vec::new(),
+            cache: FrameCache::default(),
             last_tick: None,
-            last_full: None,
             tick: Duration::from_millis(p::TICK_MS),
             gap: Duration::from_millis(p::PACKET_GAP_MS),
             hue_steps: HUE_STEPS,
-            last_chunks: 0,
         })
     }
 
@@ -217,6 +245,8 @@ impl Dongle {
         if before.bytes() == after.bytes() {
             return Ok(());
         }
+        // A partial write or failed verification also makes cached colors stale.
+        self.cache = FrameCache::default();
         let parts: Vec<_> = after.bytes().chunks(p::CHUNK_PAYLOAD).collect();
         for (i, part) in parts.iter().enumerate() {
             self.io.send_output(&p::build_raw_frame(
@@ -237,7 +267,6 @@ impl Dongle {
         if verified.bytes() != after.bytes() {
             return Err(Error::Onboard("configuration readback differs after apply; no automatic retry or rollback was written".into()));
         }
-        self.shown.clear();
         Ok(())
     }
 
@@ -283,10 +312,7 @@ impl Dongle {
     /// board can apply them, which looks like the effect fighting something
     /// else for control of the colours.
     fn respect_rate(&mut self) {
-        let budget = Duration::from_micros(
-            self.last_chunks as u64 * 1_000_000 / p::MAX_CHUNKS_PER_SEC.max(1),
-        );
-        let wait = self.tick.max(budget);
+        let wait = rate_period(self.tick, self.cache.last_chunks);
         if let Some(prev) = self.last_tick {
             let elapsed = prev.elapsed();
             if elapsed < wait {
@@ -322,9 +348,7 @@ impl Dongle {
 
     /// Whether an unchanged board is due a defensive resend.
     fn due_for_keepalive(&self) -> bool {
-        self.last_full
-            .map(|t| t.elapsed() >= Duration::from_millis(p::KEEPALIVE_MS))
-            .unwrap_or(true)
+        self.cache.due(Instant::now())
     }
 
     /// Paint a frame. Always the WHOLE frame.
@@ -354,18 +378,20 @@ impl Dongle {
 
         // Skip only if the whole board already matches. A partial comparison
         // has no meaning when the unit of transmission is the entire frame.
-        if !force && self.shown == wanted && !self.due_for_keepalive() {
+        if !force && self.cache.shown == wanted && !self.due_for_keepalive() {
             return Ok(());
         }
-
-        self.respect_rate();
 
         let (payload, sent) = p::encode_groups(&groups, p::MAX_PAYLOAD);
         if payload.is_empty() {
             return Ok(());
         }
-        self.last_chunks = self.send_message(&payload)?;
-        self.last_full = Some(Instant::now());
+        self.respect_rate();
+        // Account for the entire attempt before writing. A failed message can
+        // already have reached the receiver in part and must earn the same
+        // cooldown as a complete message. Never leave a stale cache after it.
+        self.cache.begin_send(payload.len());
+        self.send_message(&payload)?;
 
         // Record the board state only if the message really carried the whole
         // frame. If it was truncated, some keys are now dark and the cache must
@@ -373,7 +399,8 @@ impl Dongle {
         let complete = sent.len() == groups.len()
             && sent.iter().map(|g| g.leds.len()).sum::<usize>()
                 == groups.iter().map(|g| g.leds.len()).sum::<usize>();
-        self.shown = if complete { wanted } else { Vec::new() };
+        self.cache
+            .complete_send(self.last_tick, if complete { wanted } else { Vec::new() });
         Ok(())
     }
 
@@ -456,6 +483,10 @@ impl RgbDevice for Dongle {
     /// Receiver configuration is read back and validated before changing the
     /// mode. This never sends a wired fixture or changes palette/keymap bytes.
     fn ensure_per_key_mode(&mut self) -> Result<bool> {
+        // Experimental receivers retain host streaming without config writes.
+        if !KNOWN.contains(&self.id) {
+            return Ok(false);
+        }
         let config = self.read_onboard_config()?;
         if config.active()?.mode == 277 {
             return Ok(false);
@@ -532,6 +563,49 @@ pub fn open(extra: &[DeviceId]) -> Result<Dongle> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn interrupted_repaint_invalidates_cached_colors_and_accounts_for_radio_cost() {
+        let now = Instant::now();
+        let colors = vec![Rgb::new(0, 255, 0); 80];
+        let mut cache = FrameCache::default();
+        cache.complete_send(Some(now), colors.clone());
+        assert!(!cache.due(now));
+        // A six-report solid frame is interrupted: no completion is recorded.
+        cache.begin_send(84);
+        assert!(cache.shown.is_empty());
+        assert!(
+            cache.due(now),
+            "the next call must retry even the same colors"
+        );
+        assert_eq!(cache.last_chunks, 6);
+        assert_eq!(
+            rate_period(Duration::from_millis(46), cache.last_chunks),
+            Duration::from_micros(93750)
+        );
+        cache.complete_send(Some(now), colors.clone());
+        assert_eq!(cache.shown, colors);
+        assert!(!cache.due(now));
+    }
+
+    #[test]
+    fn refresh_deadline_includes_transfer_time_and_respects_expensive_frames() {
+        let started = Instant::now();
+        let mut cache = FrameCache::default();
+        cache.complete_send(Some(started), vec![]);
+        // Six reports take at least 65ms: that time is inside the deadline.
+        assert!(!cache.due(started + Duration::from_millis(65)));
+        assert!(!cache.due(started + Duration::from_millis(p::KEEPALIVE_MS - 1)));
+        assert!(cache.due(started + Duration::from_millis(p::KEEPALIVE_MS)));
+        assert_eq!(
+            rate_period(Duration::from_millis(46), 28),
+            Duration::from_micros(437500)
+        );
+        assert_eq!(
+            rate_period(Duration::from_secs(1), 6),
+            Duration::from_secs(1)
+        );
+    }
 
     #[test]
     fn a_black_frame_sends_a_complete_lighting_message() {

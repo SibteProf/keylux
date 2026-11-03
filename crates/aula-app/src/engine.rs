@@ -31,6 +31,10 @@ pub enum Cmd {
         params: Params,
     },
     ConfigureAppLighting(AppLighting),
+    SetCalibration {
+        target: String,
+        calibration: crate::calibration::Calibration,
+    },
     SetRunning(bool),
     /// Cap the write rate below the hardware ceiling.
     SetMaxFps(u32),
@@ -184,6 +188,7 @@ struct WorkerConfig {
     allow: Vec<DeviceId>,
     endpoint: Result<Option<std::net::SocketAddr>, String>,
     app_lighting: AppLighting,
+    calibrations: std::collections::BTreeMap<String, crate::calibration::Calibration>,
 }
 
 impl Engine {
@@ -194,6 +199,7 @@ impl Engine {
         allow: Vec<DeviceId>,
         endpoint: Result<Option<std::net::SocketAddr>, String>,
         app_lighting: AppLighting,
+        calibrations: std::collections::BTreeMap<String, crate::calibration::Calibration>,
         repaint: impl Fn() + Send + 'static,
     ) -> Self {
         let mut initial = Shared::new();
@@ -214,6 +220,7 @@ impl Engine {
                         allow,
                         endpoint,
                         app_lighting,
+                        calibrations,
                     },
                     repaint,
                 )
@@ -262,6 +269,7 @@ fn run(
         allow,
         mut endpoint,
         mut app_lighting,
+        mut calibrations,
     } = config;
     let anim_dir = crate::animations_dir(&effects_dir);
     let mut reg = Registry::with_all(&effects_dir, &anim_dir);
@@ -383,6 +391,12 @@ fn run(
                         applied_profile = None;
                     }
                 }
+                Ok(Cmd::SetCalibration {
+                    target,
+                    calibration,
+                }) => {
+                    calibrations.insert(target, calibration);
+                }
                 Ok(Cmd::ConfigureAppLighting(config)) => {
                     restore_default = !config.enabled;
                     app_lighting = config;
@@ -481,7 +495,14 @@ fn run(
                         Some(kb) if frame.len() != kb.led_count() => {
                             Err("The frame belongs to a different keyboard layout".into())
                         }
-                        Some(kb) => kb.set_static(&frame).map_err(|e| e.to_string()),
+                        Some(kb) => {
+                            let output = calibrations
+                                .get(&kb.id())
+                                .copied()
+                                .unwrap_or_default()
+                                .apply(&frame);
+                            kb.set_static(&output).map_err(|e| e.to_string())
+                        }
                         None => Err("No device connected".into()),
                     };
                     shared.lock().unwrap().last_nvram_result = Some(result);
@@ -647,8 +668,12 @@ fn run(
         if wants_host && !host_prepared {
             // Read the actual current mode before each host session, including
             // changes made with the keyboard's own shortcuts since connecting.
+            onboard_restore = None;
             let prepared = kb.read_onboard_settings().and_then(|settings| {
                 onboard_restore = settings;
+                // A failed verification can follow a successful mode write.
+                // Keep restoration armed for pause/shutdown in that case too.
+                host_prepared = settings.is_some();
                 Ok(kb.ensure_per_key_mode()?)
             });
             if let Err(e) = prepared {
@@ -692,7 +717,12 @@ fn run(
                 shared.lock().unwrap().errors.push("Preview size does not match the selected keyboard; reopen or recreate the animation.".into());
                 continue;
             }
-            match kb.stream(&preview) {
+            let output = calibrations
+                .get(&kb.id())
+                .copied()
+                .unwrap_or_default()
+                .apply(&preview);
+            match kb.stream(&output) {
                 Ok(()) => {
                     write_failures = 0;
                     shared.lock().unwrap().frame = preview;
@@ -773,7 +803,12 @@ fn run(
             }
         }
 
-        match kb.stream(&frame) {
+        let output = calibrations
+            .get(&kb.id())
+            .copied()
+            .unwrap_or_default()
+            .apply(&frame);
+        match kb.stream(&output) {
             Ok(()) => {
                 fps_frames += 1;
                 write_failures = 0;

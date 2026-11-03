@@ -38,6 +38,8 @@ genuinely surprising — and turns it into something usable.
   adjustable downward
 - Native F75 LED map and dynamic LED order/matrix geometry from OpenRGB
 - Device picker, saved device selection, reconnects, and CLI discovery
+- Per-device RGB color calibration for tinted switches and keycaps
+- Windows installer with folder selection, shortcuts, upgrades, and uninstall
 - Desktop app with a live keyboard preview and controls generated from each
   effect's own parameter declaration
 - Built-in effects: solid, wave, sweep, bloom, scrolling text
@@ -79,6 +81,50 @@ stacks the editor in compact layouts. **Apps** contains application profiles;
 **Settings** contains connection, appearance, interface size, and window options.
 The **Device** menu holds connection diagnostics. The **keylux** menu provides
 navigation when the sidebar is hidden or the interface is enlarged.
+
+### Color calibration
+
+Open **Settings → Color calibration** with your keyboard connected. Red, Green,
+and Blue default to 100%; reduce channels to compensate for switch or keycap
+tints. For a pink tint, try reducing red and blue while leaving green at 100%.
+Changes apply immediately to all effects, application profiles, editor live
+previews, CLI playback, and frames saved to the keyboard. **Reset calibration**
+restores all channels to 100%.
+
+Calibration is saved per device connection, so wired, receiver, and OpenRGB
+connections have separate settings. Source effect colors, editor files, and the
+on-screen preview remain unchanged. Physical filtering cannot always be fully
+corrected, and balancing channels can reduce brightness. Receiver colors still
+use the existing limited palette.
+
+### Windows installation
+
+Run `Keylux-0.5.1-Setup-x64.exe`. Choose an installation folder; the default is
+`C:\Program Files (x86)\Keylux`. Setup requests administrator access, installs
+for all users, adds a Start menu shortcut, and offers an
+optional desktop shortcut. Later
+installers reuse the selected folder. Uninstall through Windows **Installed apps**.
+
+Installed builds store editable scripts and animations in
+`%APPDATA%\keylux\content\effects` and `content\animations`. Settings remain in
+`%APPDATA%\keylux\settings.json`. Upgrades and uninstall preserve these user
+files. Bundled scripts are copied only when missing, preserving edits. Copy any
+custom scripts or animations from an older portable folder into these folders.
+Existing startup registration is redirected to the installed executable; new
+installs leave startup off until you enable it in Settings. Exit portable copies
+from their tray icons before launching the installed app.
+
+The ZIP remains available for portable use. To build the installer locally,
+install [Inno Setup](https://jrsoftware.org/isdl.php), then run:
+
+```powershell
+./packaging/windows/build-installer.ps1
+# Or specify the compiler:
+./packaging/windows/build-installer.ps1 -Compiler 'C:\path\to\ISCC.exe'
+```
+
+The installer is written to `target/installer/`. Version-tag release builds also
+attach it alongside the portable archive.
 
 On Windows and Linux, enable **Settings → Startup → Run at startup** to launch
 keylux whenever you sign in to your desktop. Changes apply immediately, and the
@@ -132,7 +178,7 @@ For persistent installation and non-root device access, add this input to your
 system flake (use `path:/absolute/path/to/keylux` for a local checkout):
 
 ```nix
-inputs.keylux.url = "github:RWayne93/keylux";
+inputs.keylux.url = "github:SibteProf/keylux";
 ```
 
 Then add the module to your `nixosSystem` modules:

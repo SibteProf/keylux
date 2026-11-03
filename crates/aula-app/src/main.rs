@@ -10,7 +10,9 @@
 
 mod backend;
 mod board;
+mod calibration;
 mod cli;
+mod content;
 mod editor;
 mod engine;
 mod icon;
@@ -25,6 +27,9 @@ mod window_ctl;
 fn effects_dir() -> std::path::PathBuf {
     if let Some(dir) = std::env::var_os("KEYLUX_EFFECTS_DIR").filter(|s| !s.is_empty()) {
         return dir.into();
+    }
+    if let Some(dir) = content::installed_effects_dir() {
+        return dir;
     }
     // Alongside the executable when installed, or the repo's effects/ in dev.
     if let Ok(exe) = std::env::current_exe() {

@@ -116,6 +116,11 @@ pub fn run() -> anyhow::Result<()> {
     apply_cli_overrides(&args, &meta, &mut params);
 
     let mut kb = open_device(&args)?;
+    let calibration = Settings::load()
+        .calibrations
+        .get(&kb.id())
+        .copied()
+        .unwrap_or_default();
     if let Some(raw) = option(&args, "--fps")? {
         let fps = raw.parse::<u32>()?;
         anyhow::ensure!(fps > 0, "--fps must be positive");
@@ -153,7 +158,7 @@ pub fn run() -> anyhow::Result<()> {
         };
         let mut frame = Frame::black(kb.led_count());
         reg.entries[idx].effect_mut().render(&ctx, &mut frame);
-        kb.stream(&frame)?;
+        kb.stream(&calibration.apply(&frame))?;
         frames += 1;
 
         // Surface a script's runtime error once rather than every frame.

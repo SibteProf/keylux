@@ -66,6 +66,8 @@ pub struct Settings {
     pub app_lighting: crate::profiles::AppLighting,
     pub color_theme: ColorTheme,
     pub ui_scale: f32,
+    /// Output correction keyed by stable device identity.
+    pub calibrations: std::collections::BTreeMap<String, crate::calibration::Calibration>,
 }
 
 impl Default for Settings {
@@ -82,6 +84,7 @@ impl Default for Settings {
             app_lighting: crate::profiles::AppLighting::default(),
             color_theme: ColorTheme::Dark,
             ui_scale: 1.0,
+            calibrations: Default::default(),
         }
     }
 }
@@ -183,6 +186,27 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn calibration_is_backwards_compatible_and_keeps_devices_separate() {
+        let old: Settings = serde_json::from_str("{}").unwrap();
+        assert!(old.calibrations.is_empty());
+        let mut settings = old;
+        let correction = crate::calibration::Calibration {
+            red: 75,
+            green: 100,
+            blue: 80,
+        };
+        settings.calibrations.insert("3554:fa09".into(), correction);
+        let back: Settings =
+            serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
+        assert_eq!(back.calibrations["3554:fa09"], correction);
+        assert!(!back.calibrations.contains_key("258a:010c"));
+        let partial: crate::calibration::Calibration =
+            serde_json::from_str(r#"{"red":60}"#).unwrap();
+        assert_eq!(partial.green, 100);
+        assert_eq!(partial.blue, 100);
+    }
 
     #[test]
     fn round_trips() {
