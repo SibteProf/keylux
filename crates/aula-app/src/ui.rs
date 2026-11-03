@@ -81,6 +81,7 @@ impl App {
             settings.allow_list(),
             settings.endpoint(),
             settings.app_lighting.clone(),
+            settings.calibrations.clone(),
             move || ctx.request_repaint(),
         );
         let anim_dir = effects_dir
@@ -473,6 +474,59 @@ impl App {
 
     /// The Settings tab: device/frame-rate controls and window behaviour, so a
     /// user who regrets a "remember my choice" can undo it without editing JSON.
+    fn calibration_ui(&mut self, ui: &mut egui::Ui) {
+        theme::section(
+            ui,
+            "Color calibration",
+            "Compensate for tinted switches or keycaps across all lighting.",
+        );
+        let target = match &self.engine.shared.lock().unwrap().status {
+            DeviceStatus::Connected { id, name, .. } => Some((id.clone(), name.clone())),
+            _ => None,
+        };
+        let Some((target, name)) = target else {
+            theme::muted(ui, "Connect a keyboard to adjust its colors.");
+            return;
+        };
+        ui.label(format!("Calibration for {name}"));
+        theme::muted(ui, "100% keeps the original channel. Reduce red and blue to counter a pink tint. Adjustments apply immediately and may reduce brightness.");
+        let mut calibration = self
+            .settings
+            .calibrations
+            .get(&target)
+            .copied()
+            .unwrap_or_default();
+        let mut changed = false;
+        let mut save = false;
+        for (label, value) in [
+            ("Red", &mut calibration.red),
+            ("Green", &mut calibration.green),
+            ("Blue", &mut calibration.blue),
+        ] {
+            let response = ui.add(egui::Slider::new(value, 0..=100).text(label).suffix("%"));
+            changed |= response.changed();
+            save |= response.drag_stopped() || (response.changed() && !response.dragged());
+        }
+        if ui.button("Reset calibration").clicked() {
+            calibration = Default::default();
+            changed = true;
+            save = true;
+        }
+        if changed {
+            self.settings
+                .calibrations
+                .insert(target.clone(), calibration);
+            self.engine.send(Cmd::SetCalibration {
+                target,
+                calibration,
+            });
+        }
+        if save {
+            self.settings.save();
+        }
+        theme::muted(ui, "Saved for this device connection. Effect colors and editor files keep their original values.");
+    }
+
     fn settings_ui(&mut self, ui: &mut egui::Ui) {
         theme::page_heading(
             ui,
@@ -548,6 +602,10 @@ impl App {
         ui.add_space(16.0);
         theme::surface(ui, |ui| {
             self.device_settings_ui(ui);
+        });
+        ui.add_space(16.0);
+        theme::surface(ui, |ui| {
+            self.calibration_ui(ui);
         });
         ui.add_space(16.0);
         theme::surface(ui, |ui| {

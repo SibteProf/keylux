@@ -83,6 +83,31 @@ jobs:
           cp README.md LICENSE-MIT LICENSE-APACHE "$stage/"
           tar -czf "${{ matrix.archive }}" -C "$stage" .
 
+      - name: Build Windows installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}/Inno Setup 6/ISCC.exe")) {
+            choco install innosetup --no-progress -y
+            if ($LASTEXITCODE -ne 0) { throw 'Inno Setup installation failed' }
+          }
+          ./packaging/windows/build-installer.ps1 -SkipBuild
+
+      - name: Verify Windows install, upgrade, and uninstall
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $installer = (Get-ChildItem target/installer/*-Setup-x64.exe | Select-Object -First 1).FullName
+          ./packaging/windows/test-installer.ps1 -Installer $installer
+
+      - name: Upload Windows installer
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: keylux-windows-installer
+          path: target/installer/*-Setup-x64.exe
+          if-no-files-found: error
+
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
@@ -93,5 +118,7 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: ${{ matrix.archive }}
+          files: |
+            ${{ matrix.archive }}
+            target/installer/*-Setup-x64.exe
           draft: true

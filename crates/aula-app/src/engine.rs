@@ -25,6 +25,10 @@ pub enum Cmd {
         params: Params,
     },
     ConfigureAppLighting(AppLighting),
+    SetCalibration {
+        target: String,
+        calibration: crate::calibration::Calibration,
+    },
     SetRunning(bool),
     /// Cap the write rate below the hardware ceiling.
     SetMaxFps(u32),
@@ -170,6 +174,7 @@ struct WorkerConfig {
     allow: Vec<DeviceId>,
     endpoint: Result<Option<std::net::SocketAddr>, String>,
     app_lighting: AppLighting,
+    calibrations: std::collections::BTreeMap<String, crate::calibration::Calibration>,
 }
 
 impl Engine {
@@ -180,6 +185,7 @@ impl Engine {
         allow: Vec<DeviceId>,
         endpoint: Result<Option<std::net::SocketAddr>, String>,
         app_lighting: AppLighting,
+        calibrations: std::collections::BTreeMap<String, crate::calibration::Calibration>,
         repaint: impl Fn() + Send + 'static,
     ) -> Self {
         let mut initial = Shared::new();
@@ -200,6 +206,7 @@ impl Engine {
                         allow,
                         endpoint,
                         app_lighting,
+                        calibrations,
                     },
                     repaint,
                 )
@@ -248,6 +255,7 @@ fn run(
         allow,
         mut endpoint,
         mut app_lighting,
+        mut calibrations,
     } = config;
     let anim_dir = effects_dir
         .parent()
@@ -319,6 +327,12 @@ fn run(
                         publish_selection(&shared, selected, &params);
                         applied_profile = None;
                     }
+                }
+                Ok(Cmd::SetCalibration {
+                    target,
+                    calibration,
+                }) => {
+                    calibrations.insert(target, calibration);
                 }
                 Ok(Cmd::ConfigureAppLighting(config)) => {
                     restore_default = !config.enabled;
@@ -402,7 +416,14 @@ fn run(
                         Some(kb) if frame.len() != kb.led_count() => {
                             Err("The frame belongs to a different keyboard layout".into())
                         }
-                        Some(kb) => kb.set_static(&frame).map_err(|e| e.to_string()),
+                        Some(kb) => {
+                            let output = calibrations
+                                .get(&kb.id())
+                                .copied()
+                                .unwrap_or_default()
+                                .apply(&frame);
+                            kb.set_static(&output).map_err(|e| e.to_string())
+                        }
                         None => Err("No device connected".into()),
                     };
                     shared.lock().unwrap().last_nvram_result = Some(result);
@@ -564,7 +585,12 @@ fn run(
                 shared.lock().unwrap().errors.push("Preview size does not match the selected keyboard; reopen or recreate the animation.".into());
                 continue;
             }
-            match kb.stream(&preview) {
+            let output = calibrations
+                .get(&kb.id())
+                .copied()
+                .unwrap_or_default()
+                .apply(&preview);
+            match kb.stream(&output) {
                 Ok(()) => {
                     write_failures = 0;
                     shared.lock().unwrap().frame = preview;
@@ -645,7 +671,12 @@ fn run(
             }
         }
 
-        match kb.stream(&frame) {
+        let output = calibrations
+            .get(&kb.id())
+            .copied()
+            .unwrap_or_default()
+            .apply(&frame);
+        match kb.stream(&output) {
             Ok(()) => {
                 fps_frames += 1;
                 write_failures = 0;

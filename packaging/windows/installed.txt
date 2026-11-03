@@ -1,0 +1,1 @@
+Keylux installed build. Editable effects and animations are stored in AppData\Roaming\keylux\content.
