@@ -14,10 +14,16 @@ use aula_effects::registry::{Registry, Source};
 use aula_effects::{EffectMeta, Params, RenderCtx};
 use aula_protocol::f75::keymap;
 use aula_protocol::f75::protocol as p;
+use aula_protocol::onboard::{LightingSettings, OnboardLighting};
 use aula_protocol::{DeviceId, Frame, KeyPos, Link, RgbDevice, ScanOptions};
 
 /// What the GUI asks the engine to do.
 pub enum Cmd {
+    RefreshOnboard,
+    ApplyOnboard {
+        target: String,
+        settings: LightingSettings,
+    },
     SelectEffect(usize),
     /// Whole parameter set, so UI and engine cannot drift apart.
     SetParams {
@@ -129,6 +135,10 @@ pub struct Shared {
     /// up with full-board animation, so animations are blocked over the dongle.
     pub link: Option<Link>,
     pub last_nvram_result: Option<Result<(), String>>,
+    pub onboard: Option<OnboardLighting>,
+    pub onboard_supported: bool,
+    pub onboard_error: Option<String>,
+    pub onboard_revision: u64,
 }
 
 impl Shared {
@@ -145,7 +155,7 @@ impl Shared {
             profile_status: ProfileStatus::default(),
             errors: Vec::new(),
             script_error: None,
-            running: true,
+            running: false,
             frames_sent: 0,
             devices: Vec::new(),
             pinned: None,
@@ -154,6 +164,10 @@ impl Shared {
             max_fps_ceiling: p::MAX_FPS,
             link: None,
             last_nvram_result: None,
+            onboard: None,
+            onboard_supported: false,
+            onboard_error: None,
+            onboard_revision: 0,
         }
     }
 }
@@ -267,7 +281,11 @@ fn run(
     let mut restore_default = false;
     let mut foreground_detector = profiles::ForegroundDetector::default();
     let mut effect_start = Instant::now();
-    let mut running = true;
+    // Connecting is observational. Host playback starts only after Play or an
+    // explicit editor preview; merely launching the GUI never changes lighting.
+    let mut running = false;
+    let mut host_prepared = false;
+    let mut onboard_restore: Option<LightingSettings> = None;
     let mut max_fps = p::MAX_FPS;
     // When set, the editor is driving the board directly; the effect engine
     // stands aside until it clears.
@@ -295,7 +313,55 @@ fn run(
         // ---- commands ----
         loop {
             match rx.try_recv() {
-                Ok(Cmd::Shutdown) | Err(TryRecvError::Disconnected) => return,
+                Ok(Cmd::RefreshOnboard) => {
+                    if !running && live_preview.is_none() {
+                        if let Some(kb) = device.as_ref() {
+                            match kb.read_onboard() {
+                                Ok(state) => {
+                                    onboard_restore = state.as_ref().map(|s| s.active);
+                                    let mut s = shared.lock().unwrap();
+                                    s.onboard = state;
+                                    s.onboard_revision = s.onboard_revision.wrapping_add(1);
+                                    s.onboard_error = None;
+                                }
+                                Err(e) => {
+                                    shared.lock().unwrap().onboard_error = Some(e.to_string())
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok(Cmd::ApplyOnboard { target, settings }) => {
+                    if let Some(kb) = device.as_mut().filter(|k| k.id() == target) {
+                        running = false;
+                        live_preview = None;
+                        host_prepared = false;
+                        let result = kb.apply_onboard(settings).and_then(|()| kb.read_onboard());
+                        let mut s = shared.lock().unwrap();
+                        s.running = false;
+                        match result {
+                            Ok(state) => {
+                                onboard_restore = state.as_ref().map(|s| s.active);
+                                s.onboard = state;
+                                s.onboard_revision = s.onboard_revision.wrapping_add(1);
+                                s.onboard_error = None;
+                            }
+                            Err(e) => s.onboard_error = Some(e.to_string()),
+                        }
+                    } else {
+                        shared.lock().unwrap().onboard_error = Some("The selected keyboard changed; read its onboard lighting before applying.".into());
+                    }
+                }
+                Ok(Cmd::Shutdown) | Err(TryRecvError::Disconnected) => {
+                    if host_prepared {
+                        if let (Some(kb), Some(settings)) = (device.as_mut(), onboard_restore) {
+                            if let Err(e) = kb.apply_onboard(settings) {
+                                eprintln!("Could not restore onboard lighting on exit: {e}");
+                            }
+                        }
+                    }
+                    return;
+                }
                 Ok(Cmd::SelectEffect(i)) => {
                     if i < reg.len() {
                         selected = i;
@@ -334,6 +400,14 @@ fn run(
                     }
                 }
                 Ok(Cmd::SelectDevice(p)) => {
+                    if host_prepared {
+                        if let (Some(kb), Some(settings)) = (device.as_mut(), onboard_restore) {
+                            if let Err(e) = kb.apply_onboard(settings) {
+                                shared.lock().unwrap().onboard_error = Some(e.to_string());
+                            }
+                        }
+                        host_prepared = false;
+                    }
                     pinned = p;
                     if let Some(id) = pinned.as_ref().and_then(|p| p.parse::<DeviceId>().ok()) {
                         if !opts.allow.contains(&id) {
@@ -349,6 +423,14 @@ fn run(
                     shared.lock().unwrap().pinned = pinned.clone();
                 }
                 Ok(Cmd::ConfigureOpenRgb(value)) => {
+                    if host_prepared {
+                        if let (Some(kb), Some(settings)) = (device.as_mut(), onboard_restore) {
+                            if let Err(e) = kb.apply_onboard(settings) {
+                                shared.lock().unwrap().onboard_error = Some(e.to_string());
+                            }
+                        }
+                        host_prepared = false;
+                    }
                     endpoint = value;
                     device = None;
                     live_preview = None;
@@ -445,32 +527,40 @@ fn run(
                             Ok(mut kb) => {
                                 let ceiling = kb.fps_ceiling();
                                 kb.set_max_fps(max_fps);
-                                // Once, before any streaming.
-                                let mode = kb.ensure_per_key_mode();
+                                // A read failure disables native editing, never authorizes a write.
+                                let onboard = kb.read_onboard();
                                 let mut s = shared.lock().unwrap();
-                                match mode {
-                                    Ok(_) => {
-                                        s.status = DeviceStatus::Connected {
-                                            name: kb.name().to_string(),
-                                            path: kb.hid_path().to_string(),
-                                            id: kb.id(),
-                                            can_change_mode: kb.can_change_mode(),
-                                            can_save: kb.can_save(),
-                                            has_matrix: kb.has_matrix(),
-                                        };
-                                        s.layout = kb.layout().to_vec();
-                                        s.frame = Frame::black(kb.led_count());
-                                        s.max_fps_ceiling = ceiling;
-                                        s.link = Some(kb.link());
-                                        drop(s);
-                                        write_failures = 0;
-                                        live_preview = None;
-                                        device = Some(kb);
+                                s.onboard_supported = kb.supports_onboard();
+                                s.onboard = None;
+                                s.onboard_error = None;
+                                match onboard {
+                                    Ok(state) => {
+                                        onboard_restore = state.as_ref().map(|state| state.active);
+                                        s.onboard = state;
+                                        s.onboard_revision = s.onboard_revision.wrapping_add(1);
                                     }
                                     Err(e) => {
-                                        s.status = DeviceStatus::Disconnected(e.to_string());
+                                        onboard_restore = None;
+                                        s.onboard_error = Some(e.to_string());
                                     }
                                 }
+                                s.status = DeviceStatus::Connected {
+                                    name: kb.name().to_string(),
+                                    path: kb.hid_path().to_string(),
+                                    id: kb.id(),
+                                    can_change_mode: kb.can_change_mode(),
+                                    can_save: kb.can_save(),
+                                    has_matrix: kb.has_matrix(),
+                                };
+                                s.layout = kb.layout().to_vec();
+                                s.frame = Frame::black(kb.led_count());
+                                s.max_fps_ceiling = ceiling;
+                                s.link = Some(kb.link());
+                                drop(s);
+                                write_failures = 0;
+                                live_preview = None;
+                                host_prepared = false;
+                                device = Some(kb);
                             }
                             Err(e) => {
                                 // The path went stale between enumerating and
@@ -552,6 +642,47 @@ fn run(
             repaint();
             continue;
         };
+
+        let wants_host = running || live_preview.is_some();
+        if wants_host && !host_prepared {
+            // Read the actual current mode before each host session, including
+            // changes made with the keyboard's own shortcuts since connecting.
+            let prepared = kb.read_onboard_settings().and_then(|settings| {
+                onboard_restore = settings;
+                Ok(kb.ensure_per_key_mode()?)
+            });
+            if let Err(e) = prepared {
+                running = false;
+                live_preview = None;
+                let mut state = shared.lock().unwrap();
+                state.running = false;
+                state.onboard_error = Some(format!("Could not start host lighting: {e}"));
+                continue;
+            }
+            host_prepared = true;
+            shared.lock().unwrap().onboard_error = None;
+        }
+        if !wants_host && host_prepared {
+            // Return to the native effect observed before the explicit host session.
+            // Applying this uses a fresh read, preserving every other config byte.
+            if let Some(settings) = onboard_restore {
+                match kb.apply_onboard(settings) {
+                    Ok(()) => {
+                        let mut state = shared.lock().unwrap();
+                        if let Some(onboard) = state.onboard.as_mut() {
+                            onboard.active = settings;
+                        }
+                        state.onboard_error = None;
+                        state.onboard_revision = state.onboard_revision.wrapping_add(1);
+                    }
+                    Err(e) => {
+                        shared.lock().unwrap().onboard_error =
+                            Some(format!("Could not restore onboard lighting: {e}"))
+                    }
+                }
+            }
+            host_prepared = false;
+        }
 
         // Live preview from the editor overrides everything, paused or not: the
         // user is actively painting and expects the board to follow the brush.
@@ -823,6 +954,70 @@ fn merge_params(reg: &Registry, idx: usize, old: Params) -> Params {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "requires receiver; checks passive startup, briefly plays host lighting, then restores native lighting"]
+    fn receiver_startup_preserves_onboard_lighting() {
+        let kb = aula_protocol::dongle::open(&[]).unwrap();
+        let before = kb.read_onboard_config().unwrap();
+        let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../effects");
+        let engine = Engine::spawn(
+            dir,
+            Some("3554:fa09".into()),
+            Vec::new(),
+            Ok(None),
+            AppLighting::default(),
+            || {},
+        );
+        let deadline = Instant::now() + Duration::from_secs(25);
+        loop {
+            let s = engine.shared.lock().unwrap();
+            if matches!(s.status, DeviceStatus::Connected { .. }) {
+                assert!(!s.running);
+                assert_eq!(s.frames_sent, 0);
+                assert_eq!(s.onboard.as_ref().unwrap().active, before.active().unwrap());
+                break;
+            }
+            assert!(Instant::now() < deadline, "{:?}", s.status);
+            drop(s);
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(engine.shared.lock().unwrap().frames_sent, 0);
+        let revision = engine.shared.lock().unwrap().onboard_revision;
+        engine.send(Cmd::SetRunning(true));
+        let deadline = Instant::now() + Duration::from_secs(25);
+        loop {
+            let s = engine.shared.lock().unwrap();
+            if s.frames_sent > 0 {
+                break;
+            }
+            assert!(s.onboard_error.is_none(), "{:?}", s.onboard_error);
+            assert!(Instant::now() < deadline, "Host playback did not start");
+            drop(s);
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        engine.send(Cmd::SetRunning(false));
+        let deadline = Instant::now() + Duration::from_secs(25);
+        loop {
+            let s = engine.shared.lock().unwrap();
+            if !s.running && s.onboard_revision > revision {
+                assert_eq!(s.onboard.as_ref().unwrap().active, before.active().unwrap());
+                break;
+            }
+            assert!(s.onboard_error.is_none(), "{:?}", s.onboard_error);
+            assert!(
+                Instant::now() < deadline,
+                "Native restoration did not finish"
+            );
+            drop(s);
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        assert_eq!(kb.read_onboard_config().unwrap().bytes(), before.bytes());
+        drop(engine);
+        assert_eq!(kb.read_onboard_config().unwrap().bytes(), before.bytes());
+    }
 
     #[test]
     fn dropping_engine_waits_for_worker_shutdown() {

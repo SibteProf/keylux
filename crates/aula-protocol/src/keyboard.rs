@@ -85,13 +85,12 @@ impl Keyboard {
 
     /// Whether this keyboard will accept a lighting-mode change.
     ///
-    /// Both links have a config block: the receiver carries the same 128-byte
-    /// block under command `0x04`, so a mode change is always possible there.
+    /// The verified receiver now has validated readback. Other receivers are
+    /// not authorized for configuration writes by sharing the same framing.
     pub fn can_change_mode(&self) -> bool {
         match self {
             Keyboard::Wired(k) => k.can_change_mode(),
-            // The receiver carries the same config block under command 0x04.
-            Keyboard::Wireless(_) => true,
+            Keyboard::Wireless(k) => dongle::KNOWN.contains(&k.id()),
         }
     }
 }

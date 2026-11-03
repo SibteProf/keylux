@@ -386,6 +386,54 @@ enough.
 
 ## Config block
 
+### Receiver readback and native effects
+
+The `3554:fa09` receiver's AULA HUB `bytechMechanical` driver implements the
+readback that was missing from the original Keylux reverse engineering:
+
+- Output report ID `0x13`, command `0x44`, followed by zeros: read configuration.
+- Output report ID `0x13`, command `0x49`, followed by zeros: read color table.
+- Read requests are zero-padded to 20 bytes including the report ID; they do
+  not use the checksum of a chunked write.
+- Interrupt replies include the report ID, echoed command, chunk count, chunk
+  index, raw payload length, up to 14 payload bytes, and an additive checksum.
+- Configuration replies are ten chunks totaling 128 bytes, ending in `5A A5`.
+  The final chunk contains two bytes; its padding must not enter the config.
+- Color-table replies are 35 chunks totaling 490 bytes. The known effects use
+  21-byte records at `mode * 21`, consistent with seven RGB888 colors. The
+  seven bytes after the first 23 records remain unclassified.
+
+The effect names and IDs come from the website's fixed per-model table. Its
+`getProfileList()` exposes one locally named profile rather than enumerating
+named profiles from the receiver. The current mode comes from config bytes
+9–10, big-endian. For known ordinary effect IDs, brightness is at `56 + 2*mode`
+and the next byte contains speed in its upper nibble and single/multicolor
+selection in its lower nibble (`0`/`7`). The table is preceded by `FF FF` at
+56–57 on the verified receiver. Unknown layouts or parameters are rejected.
+
+The recorded device's native modes 1, 2, 3, 4, 5, 7, 8, 10, 11, 12, 13, 15,
+16, and 17 all held red, green, blue, yellow, magenta, cyan, and white palettes.
+This establishes stored colors, not how each firmware routine uses all seven.
+See `reference/f75-receiver-color-readback.json` for two matching live reads
+and `reference/f75-receiver-config-readback.json` for the vendor driver's
+cached configuration, independently checked for length and signature.
+
+Keylux now assembles replies on its own HID handle, validates every checksum,
+rejects missing/conflicting chunks, and retries incomplete reads. The vendor
+web helper timed out in testing even though a passive listener captured the
+full response. Do not infer a protocol limitation from that helper's timeout.
+
+Native mode changes use `0x04` with raw-length framing and conservative 200 ms
+chunk spacing, as in the official driver's configuration queue. Every apply
+reads this receiver's configuration afresh, changes only mode and the chosen
+effect's parameters, and verifies the complete block afterward. It does not
+write the color table, key mappings, or a config copied from another transport.
+The earlier statements about missing receiver readback describe the original
+implementation; the prohibition on writing foreign/default config blocks
+still applies.
+
+### Wired configuration
+
 Read `0x84`, write `0x04`, 128 bytes at address `00 00 01 00`. A valid block
 ends with the signature `5A A5`.
 

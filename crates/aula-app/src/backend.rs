@@ -176,6 +176,42 @@ pub enum Device {
 }
 
 impl Device {
+    pub fn supports_onboard(&self) -> bool {
+        matches!(self, Self::Native(Keyboard::Wireless(k)) if aula_protocol::dongle::KNOWN.contains(&k.id()))
+    }
+
+    pub fn read_onboard_settings(
+        &self,
+    ) -> anyhow::Result<Option<aula_protocol::onboard::LightingSettings>> {
+        match self {
+            Self::Native(Keyboard::Wireless(k)) if self.supports_onboard() => {
+                Ok(Some(k.read_onboard_config()?.active()?))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    pub fn read_onboard(&self) -> anyhow::Result<Option<aula_protocol::onboard::OnboardLighting>> {
+        match self {
+            Self::Native(Keyboard::Wireless(k)) if self.supports_onboard() => {
+                Ok(Some(k.read_onboard_lighting()?))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    pub fn apply_onboard(
+        &mut self,
+        settings: aula_protocol::onboard::LightingSettings,
+    ) -> anyhow::Result<()> {
+        match self {
+            Self::Native(Keyboard::Wireless(k)) => Ok(k.set_onboard_lighting(settings)?),
+            _ => anyhow::bail!(
+                "Onboard lighting is currently verified only for the AULA 3554:fa09 receiver"
+            ),
+        }
+    }
+
     pub fn open(c: &Candidate, endpoint: Option<SocketAddr>) -> anyhow::Result<Self> {
         Ok(match c {
             Candidate::Native(c) => Self::Native(Keyboard::open_candidate(c, ChannelOrder::Rgb)?),

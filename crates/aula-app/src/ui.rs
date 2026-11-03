@@ -3,7 +3,8 @@
 use eframe::egui;
 
 use aula_effects::{ParamKind, ParamSpec, Params, Value};
-use aula_protocol::{Link, Rgb};
+use aula_protocol::onboard::{effect_name, LightingSettings, EFFECTS};
+use aula_protocol::{Frame, KeyPos, Link, Rgb};
 use strum::IntoEnumIterator;
 
 use crate::board;
@@ -38,6 +39,9 @@ pub struct App {
     last_tick: std::time::Instant,
     notice: Option<String>,
     effect_query: String,
+    onboard_draft: Option<LightingSettings>,
+    show_onboard: bool,
+    onboard_seen_revision: u64,
     sidebar_visible: bool,
     startup_enabled: bool,
     startup_error: Option<String>,
@@ -132,6 +136,9 @@ impl App {
             last_tick: std::time::Instant::now(),
             notice: None,
             effect_query: String::new(),
+            onboard_draft: None,
+            show_onboard: true,
+            onboard_seen_revision: u64::MAX,
             sidebar_visible: true,
             startup_enabled,
             startup_error,
@@ -866,6 +873,149 @@ fn open_folder(path: &std::path::Path) {
     let _ = std::process::Command::new("xdg-open").arg(path).spawn();
 }
 
+impl App {
+    fn onboard_ui(&mut self, ui: &mut egui::Ui, running: bool, layout: &[KeyPos], leds: usize) {
+        let (supported, state, error, target, revision) = {
+            let s = self.engine.shared.lock().unwrap();
+            let target = match &s.status {
+                DeviceStatus::Connected { id, .. } => Some(id.clone()),
+                _ => None,
+            };
+            (
+                s.onboard_supported,
+                s.onboard.clone(),
+                s.onboard_error.clone(),
+                target,
+                s.onboard_revision,
+            )
+        };
+        if revision != self.onboard_seen_revision {
+            self.onboard_draft = None;
+            self.onboard_seen_revision = revision;
+        }
+        if !supported {
+            if !running {
+                theme::muted(ui, "Your keyboard lighting is unchanged. Start Keylux lighting to play a software effect.");
+                ui.add_space(12.0);
+            }
+            return;
+        }
+        let mut preview = Frame::black(leds);
+        let mut preview_status = "Unavailable";
+        theme::surface(ui, |ui| {
+            ui.label(egui::RichText::new("Onboard lighting").strong());
+            theme::muted(
+                ui,
+                "Use the keyboard's original effects and saved palettes. Apply changes when ready.",
+            );
+            if let Some(message) = error {
+                ui.colored_label(ui.visuals().warn_fg_color, message);
+            }
+            if let Some(state) = state {
+                let mut draft = self.onboard_draft.unwrap_or(state.active);
+                ui.label(format!(
+                    "Last read: {} · Onboard Profile 1",
+                    effect_name(state.active.mode)
+                ));
+                let previous = draft.mode;
+                egui::ComboBox::from_id_salt("onboard-effect")
+                    .selected_text(effect_name(draft.mode))
+                    .show_ui(ui, |ui| {
+                        for &(mode, name) in EFFECTS {
+                            ui.selectable_value(&mut draft.mode, mode, name);
+                        }
+                    });
+                if previous != draft.mode {
+                    if let Some(saved) = state.presets.iter().find(|s| s.mode == draft.mode) {
+                        draft = *saved;
+                    }
+                }
+                ui.add_enabled_ui(draft.mode != 0 && draft.mode != 277, |ui| {
+                    let mut brightness = u16::from(draft.brightness) + 1;
+                    let mut speed = u16::from(draft.speed) + 1;
+                    ui.add(egui::Slider::new(&mut brightness, 1..=21).text("Brightness"));
+                    ui.add(egui::Slider::new(&mut speed, 1..=16).text("Speed"));
+                    draft.brightness = (brightness - 1) as u8;
+                    draft.speed = (speed - 1) as u8;
+                    ui.checkbox(&mut draft.multicolor, "Multicolor");
+                });
+                if let Some((_, palette)) = state.palettes.iter().find(|(id, _)| *id == draft.mode)
+                {
+                    let seconds = ui.input(|input| input.time) as f32;
+                    aula_effects::onboard_preview::render(
+                        draft,
+                        palette,
+                        seconds,
+                        layout,
+                        &mut preview,
+                    );
+                    preview_status = if draft.mode == 1 {
+                        "Illustrative static preview"
+                    } else {
+                        ui.ctx()
+                            .request_repaint_after(std::time::Duration::from_millis(33));
+                        "Illustrative animation"
+                    };
+                    if matches!(draft.mode, 4 | 7 | 12) {
+                        theme::muted(ui, "Preview demonstrates simulated key presses.");
+                    }
+                    ui.horizontal(|ui| {
+                        ui.label("Saved palette");
+                        for c in palette {
+                            let (rect, response) = ui
+                                .allocate_exact_size(egui::vec2(20.0, 20.0), egui::Sense::hover());
+                            ui.painter().rect_filled(
+                                rect,
+                                3.0,
+                                egui::Color32::from_rgb(c.r, c.g, c.b),
+                            );
+                            response.on_hover_text(format!("#{:02X}{:02X}{:02X}", c.r, c.g, c.b));
+                        }
+                    });
+                }
+                if draft.mode == 0 {
+                    preview = Frame::black(leds);
+                    preview_status = "Off";
+                }
+                self.onboard_draft = Some(draft);
+                if ui
+                    .add_enabled(
+                        target.is_some(),
+                        egui::Button::new("Apply onboard lighting"),
+                    )
+                    .clicked()
+                {
+                    if let Some(target) = target.clone() {
+                        self.engine.send(Cmd::ApplyOnboard {
+                            target,
+                            settings: draft,
+                        });
+                    }
+                }
+            } else {
+                theme::muted(ui, "Waiting for a complete, validated onboard read. Existing lighting is preserved.");
+            }
+            if ui
+                .add_enabled(!running, egui::Button::new("Refresh onboard settings"))
+                .clicked()
+            {
+                self.onboard_draft = None;
+                self.engine.send(Cmd::RefreshOnboard);
+            }
+            if running {
+                theme::muted(ui, "Keylux playback is active. Pause to restore the previously selected onboard effect.");
+            }
+        });
+        ui.add_space(14.0);
+        board::preview(ui, layout, &preview, preview_status);
+        theme::muted(ui, match preview_status {
+            "Illustrative animation" | "Illustrative static preview" => "Approximate preview using saved colors and selected controls. The keyboard renders the original firmware effect after Apply.",
+            "Off" => "The selected effect turns the lighting off. Apply when ready.",
+            _ => "Per-key colors are unavailable for this selection. The preview does not change your keyboard.",
+        });
+    }
+}
+
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Snapshot the engine state, then release the lock before drawing.
@@ -909,6 +1059,7 @@ impl eframe::App for App {
             _ => None,
         };
         if target != self.last_device_target {
+            self.onboard_draft = None;
             if let Some(ed) = self.editor.as_mut() {
                 ed.live = false;
             }
@@ -996,9 +1147,14 @@ impl eframe::App for App {
                             )
                             .on_hover_text(&status_line);
                             let (signal, label) = match &status {
-                                DeviceStatus::Connected { .. } => {
-                                    (pal.success, if running { "Connected" } else { "Paused" })
-                                }
+                                DeviceStatus::Connected { .. } => (
+                                    pal.success,
+                                    if running {
+                                        "Keylux playing"
+                                    } else {
+                                        "Onboard / idle"
+                                    },
+                                ),
                                 DeviceStatus::Waiting { .. } => {
                                     (pal.warning, "Waiting for keyboard")
                                 }
@@ -1018,15 +1174,18 @@ impl eframe::App for App {
                                 if running {
                                     "Pause"
                                 } else {
-                                    "Resume"
+                                    "Start Keylux"
                                 }
                             } else if running {
                                 "Pause lighting"
                             } else {
-                                "Resume lighting"
+                                "Start Keylux lighting"
                             }))
                             .clicked()
                         {
+                            if !running {
+                                self.show_onboard = false;
+                            }
                             self.engine.send(Cmd::SetRunning(!running));
                         }
                         ui.menu_button("Device", |ui| {
@@ -1170,6 +1329,9 @@ impl eframe::App for App {
                                     } else {
                                         response.on_hover_text(&effect.meta.description)
                                     };
+                                    if response.clicked() {
+                                        self.show_onboard = false;
+                                    }
                                     if response.clicked() && index != self.selected {
                                         self.selected = index;
                                         self.params = Params::from_specs(&effect.meta.params);
@@ -1273,6 +1435,24 @@ impl eframe::App for App {
             if !editor_live && self.live_active {
                 self.engine.send(Cmd::LivePreview(None));
                 self.live_active = false;
+            }
+
+            if self.tab == Tab::Play {
+                let onboard_supported = self.engine.shared.lock().unwrap().onboard_supported;
+                if onboard_supported {
+                    ui.horizontal(|ui| {
+                        ui.selectable_value(&mut self.show_onboard, true, "Onboard lighting");
+                        ui.selectable_value(&mut self.show_onboard, false, "Keylux effects");
+                    });
+                    ui.add_space(12.0);
+                    if self.show_onboard {
+                        self.onboard_ui(ui, running, &layout, frame.len());
+                        return;
+                    }
+                }
+                if !running {
+                    theme::muted(ui, "Your onboard lighting is preserved. Start Keylux lighting to play this software effect.");
+                }
             }
 
             if self.tab == Tab::Apps {
@@ -1427,16 +1607,7 @@ impl eframe::App for App {
             }
             theme::muted(ui, &effect.meta.description);
             ui.add_space(18.0);
-            theme::surface(ui, |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(egui::RichText::new("Keyboard preview").strong());
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| { theme::muted(ui, if running { "Live" } else { "Paused" }); });
-                });
-                ui.add_space(10.0);
-                let height = (ui.available_width() * 0.30).clamp(160.0, 230.0);
-                let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), height), egui::Sense::hover());
-                board::draw_board(ui, rect, &layout, &frame);
-            });
+            board::preview(ui, &layout, &frame, if running { "Live" } else { "Paused" });
             if wireless {
                 ui.add_space(12.0);
                 ui.colored_label(pal.warning, "Connected wirelessly. Use USB for smooth animation playback.");
