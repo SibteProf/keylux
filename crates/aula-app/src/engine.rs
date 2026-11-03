@@ -249,10 +249,7 @@ fn run(
         mut endpoint,
         mut app_lighting,
     } = config;
-    let anim_dir = effects_dir
-        .parent()
-        .map(|p| p.join("animations"))
-        .unwrap_or_else(|| std::path::PathBuf::from("animations"));
+    let anim_dir = crate::animations_dir(&effects_dir);
     let mut reg = Registry::with_all(&effects_dir, &anim_dir);
     publish_effects(&shared, &reg);
 

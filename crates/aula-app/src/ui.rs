@@ -83,10 +83,7 @@ impl App {
             settings.app_lighting.clone(),
             move || ctx.request_repaint(),
         );
-        let anim_dir = effects_dir
-            .parent()
-            .map(|p| p.join("animations"))
-            .unwrap_or_else(|| std::path::PathBuf::from("animations"));
+        let anim_dir = crate::animations_dir(&effects_dir);
         let _ = std::fs::create_dir_all(&anim_dir);
 
         // Captured once at startup: the only way to reach a hidden window,

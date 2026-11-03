@@ -114,7 +114,51 @@ libraries).
 cargo build --release
 ```
 
-### Linux permissions and dependencies
+### NixOS
+
+The flake packages Keylux, its bundled effects, desktop launcher, and rules for
+the supported AULA wired keyboard and receiver. Build or run it with:
+
+```bash
+nix build
+nix run . -- list
+nix run . -- devices --native
+nix develop # Rust toolchain and native build dependencies
+```
+
+For persistent installation and non-root device access, add this input to your
+system flake (use `path:/absolute/path/to/keylux` for a local checkout):
+
+```nix
+inputs.keylux.url = "github:RWayne93/keylux";
+```
+
+Then add the module to your `nixosSystem` modules:
+
+```nix
+modules = [
+  inputs.keylux.nixosModules.default
+  { programs.keylux.enable = true; }
+];
+```
+
+Rebuild your system and reconnect the keyboard/receiver. The module grants the
+active local desktop user access through `uaccess`; no root GUI or extra group
+membership is needed. It does not start lighting automatically. Launch **Keylux**
+from your desktop, or run `keylux`. Desktop autostart can be enabled in Settings.
+
+Packaged scripts live in `$out/share/keylux/effects`. Set `KEYLUX_EFFECTS_DIR`
+to a writable copy if you want to edit or add scripts. Packaged animations and
+compositions are saved under `$XDG_DATA_HOME/keylux/animations` (default
+`~/.local/share/keylux/animations`); `KEYLUX_ANIMATIONS_DIR` overrides that path.
+Preferences remain under `~/.config/keylux`.
+
+`nix flake check` builds the package and runs the workspace tests plus a check
+that the installed command loads every bundled script outside the source tree.
+Hardware checks are separate: `keylux diagnose --device 3554:fa09` only enumerates
+the receiver, and `keylux devices --native` checks supported-device discovery.
+
+### Other Linux distributions
 
 Building `keylux` needs the GTK 3 development headers and a few system
 libraries for HID and input emulation. Install these packages for your

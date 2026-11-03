@@ -11,14 +11,7 @@ use crate::backend::{self, Device};
 use crate::settings::Settings;
 
 fn effects_dir() -> std::path::PathBuf {
-    // Next to the executable when installed, or the repo's effects/ in dev.
-    for candidate in ["effects", "../effects", "../../effects"] {
-        let p = std::path::PathBuf::from(candidate);
-        if p.is_dir() {
-            return p;
-        }
-    }
-    std::path::PathBuf::from("effects")
+    crate::effects_dir()
 }
 
 pub fn run() -> anyhow::Result<()> {
@@ -61,10 +54,7 @@ pub fn run() -> anyhow::Result<()> {
     }
 
     let dir = effects_dir();
-    let anim_dir = dir
-        .parent()
-        .map(|p| p.join("animations"))
-        .unwrap_or_else(|| std::path::PathBuf::from("animations"));
+    let anim_dir = crate::animations_dir(&dir);
     let mut reg = Registry::with_all(&dir, &anim_dir);
 
     for e in &reg.errors {

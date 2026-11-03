@@ -23,6 +23,9 @@ mod ui;
 mod window_ctl;
 
 fn effects_dir() -> std::path::PathBuf {
+    if let Some(dir) = std::env::var_os("KEYLUX_EFFECTS_DIR").filter(|s| !s.is_empty()) {
+        return dir.into();
+    }
     // Alongside the executable when installed, or the repo's effects/ in dev.
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
@@ -39,6 +42,31 @@ fn effects_dir() -> std::path::PathBuf {
         }
     }
     std::path::PathBuf::from("effects")
+}
+
+fn animations_dir(effects: &std::path::Path) -> std::path::PathBuf {
+    if let Some(dir) = std::env::var_os("KEYLUX_ANIMATIONS_DIR").filter(|s| !s.is_empty()) {
+        return dir.into();
+    }
+    // Distribution packages can supply effects from a read-only location.
+    // Keep user-created content in writable XDG storage in that case.
+    if std::env::var_os("KEYLUX_EFFECTS_DIR").is_some_and(|s| !s.is_empty()) {
+        let data = std::env::var_os("XDG_DATA_HOME")
+            .filter(|s| !s.is_empty())
+            .map(std::path::PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("HOME")
+                    .filter(|s| !s.is_empty())
+                    .map(|h| std::path::PathBuf::from(h).join(".local/share"))
+            });
+        if let Some(data) = data {
+            return data.join("keylux/animations");
+        }
+    }
+    effects
+        .parent()
+        .map(|p| p.join("animations"))
+        .unwrap_or_else(|| std::path::PathBuf::from("animations"))
 }
 
 fn main() -> anyhow::Result<()> {
