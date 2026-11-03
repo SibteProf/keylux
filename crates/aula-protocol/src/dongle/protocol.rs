@@ -135,7 +135,8 @@ pub const TICK_MS: u64 = 46;
 /// lights perfectly while dropping and doubling keypresses.
 pub const PACKET_GAP_MS: u64 = 13;
 
-/// Resend everything if nothing has been sent for this long.
+/// Start an unchanged frame's refresh after this interval, measured from the
+/// start of the previous successful message rather than its completion.
 ///
 /// Two jobs. The firmware repaints itself behind the driver — the wired path
 /// documents the same hazard — and a delta-only driver is defenceless against
@@ -144,13 +145,16 @@ pub const PACKET_GAP_MS: u64 = 13;
 ///
 /// At two seconds a static colour visibly pulsed. A 700 ms interval improved
 /// this, but hardware testing still found occasional returns to the firmware
-/// effect before the next resend. Try 250 ms to shorten that recovery gap.
+/// effect before the next resend. A completion-based 250 ms wait also leaves
+/// the multi-report transfer time outside the refresh interval. Use 125 ms
+/// start-to-start to reduce that gap. This needs physical validation; it is
+/// not a measured firmware timeout.
 /// This is a refresh policy, not a measured firmware timeout; the receiver's
 /// chunk budget and packet spacing still govern every send.
 ///
 /// This only fires when nothing changed, so it costs nothing during an
 /// animation and never interrupts one.
-pub const KEEPALIVE_MS: u64 = 250;
+pub const KEEPALIVE_MS: u64 = 125;
 
 /// The link's actual capacity, in 20-byte chunks per second.
 ///

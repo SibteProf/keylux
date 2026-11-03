@@ -11,14 +11,7 @@ use crate::backend::{self, Device};
 use crate::settings::Settings;
 
 fn effects_dir() -> std::path::PathBuf {
-    // Next to the executable when installed, or the repo's effects/ in dev.
-    for candidate in ["effects", "../effects", "../../effects"] {
-        let p = std::path::PathBuf::from(candidate);
-        if p.is_dir() {
-            return p;
-        }
-    }
-    std::path::PathBuf::from("effects")
+    crate::effects_dir()
 }
 
 pub fn run() -> anyhow::Result<()> {
@@ -122,6 +115,11 @@ pub fn run() -> anyhow::Result<()> {
     apply_cli_overrides(&args, &meta, &mut params);
 
     let mut kb = open_device(&args)?;
+    let calibration = Settings::load()
+        .calibrations
+        .get(&kb.id())
+        .copied()
+        .unwrap_or_default();
     if let Some(raw) = option(&args, "--fps")? {
         let fps = raw.parse::<u32>()?;
         anyhow::ensure!(fps > 0, "--fps must be positive");
@@ -159,7 +157,7 @@ pub fn run() -> anyhow::Result<()> {
         };
         let mut frame = Frame::black(kb.led_count());
         reg.entries[idx].effect_mut().render(&ctx, &mut frame);
-        kb.stream(&frame)?;
+        kb.stream(&calibration.apply(&frame))?;
         frames += 1;
 
         // Surface a script's runtime error once rather than every frame.

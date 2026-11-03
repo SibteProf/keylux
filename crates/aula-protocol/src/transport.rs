@@ -110,7 +110,7 @@ impl Transport {
     /// a feature write there returns `Incorrect function`. It takes output
     /// reports, which is also why no feature-report probe can ever find it.
     pub fn send_output(&self, buf: &[u8]) -> Result<()> {
-        self.dev.write(buf).map_err(Error::Hid).map(|_| ())
+        validate_output_write(self.dev.write(buf).map_err(Error::Hid)?, buf.len())
     }
 
     /// Read one feature report of the protocol's packet length.
@@ -121,6 +121,16 @@ impl Transport {
         buf.truncate(n.max(1));
         Ok(buf)
     }
+}
+
+fn validate_output_write(sent: usize, expected: usize) -> Result<()> {
+    if sent != expected {
+        return Err(Error::Hid(hidapi::HidError::IncompleteSendError {
+            sent,
+            all: expected,
+        }));
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -558,6 +568,16 @@ impl CollectionInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn short_output_reports_are_errors_instead_of_successful_lighting_frames() {
+        assert!(validate_output_write(20, 20).is_ok());
+        for sent in [0, 1, 19] {
+            assert!(
+                matches!(validate_output_write(sent, 20), Err(Error::Hid(hidapi::HidError::IncompleteSendError { sent: n, all: 20 })) if n == sent)
+            );
+        }
+    }
 
     fn candidate(id: DeviceId, link: Link, confirmed: bool) -> DeviceCandidate {
         DeviceCandidate {
