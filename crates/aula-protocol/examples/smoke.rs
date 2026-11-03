@@ -43,6 +43,18 @@ fn main() -> anyhow::Result<()> {
     match cmd {
         "scan" => scan(&opts)?,
         "info" => info(&opts)?,
+        "onboard" => {
+            let kb = dongle::open(&opts.allow)?;
+            let state = kb.read_onboard_lighting()?;
+            println!(
+                "Onboard Profile 1: {} (mode {}), brightness {}, speed {}, multicolor {}",
+                aula_protocol::onboard::effect_name(state.active.mode),
+                state.active.mode,
+                state.active.brightness + 1,
+                state.active.speed + 1,
+                state.active.multicolor
+            );
+        }
         "ping" => ping(&opts, device_arg(&args)?)?,
         "layout" => layout(),
         "dry" => dry_run(),

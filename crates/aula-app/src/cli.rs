@@ -20,11 +20,15 @@ pub fn run() -> anyhow::Result<()> {
     if name == "diagnose" {
         return diagnose(&args);
     }
+    if name == "onboard" {
+        return onboard(&args);
+    }
     if matches!(name, "--version" | "-V") {
         println!("keylux {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
     if matches!(name, "help" | "--help" | "-h") {
+        println!("keylux onboard list\nkeylux onboard status [--device VID:PID]\nkeylux onboard apply NAME_OR_ID [--brightness 1..21] [--speed 1..16] [--multicolor | --single-color] [--device VID:PID]\n  Native AULA 3554:fa09 receiver effects. Status only reads; apply changes onboard settings.\n");
         println!("keylux diagnose [--device VID:PID] [--output FILE]\n  Enumerate HID metadata only; no device handles or protocol commands.\n");
         println!("keylux devices [--openrgb IP:PORT | --native]\nkeylux keyboards\nkeylux list\nkeylux <effect> [seconds] [--device SELECTOR | --keyboard NAME] [--openrgb IP:PORT | --native] [--fps N] [--param value ...]\n\nUse devices to list connected keyboard selectors. OpenRGB keyboards require its SDK server.\n--keyboard matches one exact device name and rejects duplicates.\n--native limits discovery to AULA HID. --openrgb restricts discovery to that SDK server.\nWith no selector, the saved GUI selection is used, then automatic selection (AULA preferred).");
         return Ok(());
@@ -54,10 +58,7 @@ pub fn run() -> anyhow::Result<()> {
     }
 
     let dir = effects_dir();
-    let anim_dir = dir
-        .parent()
-        .map(|p| p.join("animations"))
-        .unwrap_or_else(|| std::path::PathBuf::from("animations"));
+    let anim_dir = crate::animations_dir(&dir);
     let mut reg = Registry::with_all(&dir, &anim_dir);
 
     for e in &reg.errors {
@@ -181,6 +182,86 @@ pub fn run() -> anyhow::Result<()> {
 
 fn script_error(entry: &aula_effects::registry::Entry) -> Option<String> {
     entry.runtime_error().map(str::to_string)
+}
+
+fn onboard(args: &[String]) -> anyhow::Result<()> {
+    use aula_protocol::onboard::{effect_name, EFFECTS};
+    let action = args.get(1).map(String::as_str).unwrap_or("status");
+    if action == "list" {
+        for &(id, name) in EFFECTS {
+            println!("{id:>3}  {name}");
+        }
+        return Ok(());
+    }
+    anyhow::ensure!(
+        matches!(action, "status" | "apply"),
+        "Use onboard list, status, or apply"
+    );
+    let mode = if action == "apply" {
+        let name = args
+            .get(2)
+            .ok_or_else(|| anyhow::anyhow!("Supply a firmware effect name or ID"))?;
+        Some(
+            EFFECTS
+                .iter()
+                .find(|(id, label)| name == &id.to_string() || name.eq_ignore_ascii_case(label))
+                .map(|(id, _)| *id)
+                .ok_or_else(|| anyhow::anyhow!("Unknown onboard effect; use onboard list"))?,
+        )
+    } else {
+        None
+    };
+    let mut kb = open_device(args)?;
+    anyhow::ensure!(
+        kb.supports_onboard(),
+        "Onboard lighting is verified only for the AULA 3554:fa09 receiver"
+    );
+    let mut state = kb
+        .read_onboard()?
+        .ok_or_else(|| anyhow::anyhow!("No onboard settings available"))?;
+    if let Some(mode) = mode {
+        let mut settings = *state.presets.iter().find(|p| p.mode == mode).unwrap();
+        if let Some(raw) = option(args, "--brightness")? {
+            let level: u8 = raw.parse()?;
+            anyhow::ensure!((1..=21).contains(&level), "brightness must be 1..21");
+            settings.brightness = level - 1;
+        }
+        if let Some(raw) = option(args, "--speed")? {
+            let level: u8 = raw.parse()?;
+            anyhow::ensure!((1..=16).contains(&level), "speed must be 1..16");
+            settings.speed = level - 1;
+        }
+        let multi = args.iter().any(|a| a == "--multicolor");
+        let single = args.iter().any(|a| a == "--single-color");
+        anyhow::ensure!(
+            !(multi && single),
+            "Choose either --multicolor or --single-color"
+        );
+        if multi || single {
+            settings.multicolor = multi;
+        }
+        kb.apply_onboard(settings)?;
+        state = kb.read_onboard()?.unwrap();
+    }
+    println!(
+        "Onboard Profile 1: {} (mode {})",
+        effect_name(state.active.mode),
+        state.active.mode
+    );
+    println!(
+        "Brightness: {} / 21; speed: {} / 16; multicolor: {}",
+        state.active.brightness + 1,
+        state.active.speed + 1,
+        state.active.multicolor
+    );
+    for (id, colors) in state.palettes {
+        let hex: Vec<_> = colors
+            .iter()
+            .map(|c| format!("#{:02X}{:02X}{:02X}", c.r, c.g, c.b))
+            .collect();
+        println!("{}: {}", effect_name(id), hex.join(" "));
+    }
+    Ok(())
 }
 
 fn diagnose(args: &[String]) -> anyhow::Result<()> {

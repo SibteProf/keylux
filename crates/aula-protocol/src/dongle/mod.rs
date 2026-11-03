@@ -27,6 +27,7 @@ use std::time::{Duration, Instant};
 use crate::color::Rgb;
 use crate::device::{DeviceId, Frame, KeyPos, Link, RgbDevice};
 use crate::f75::keymap;
+use crate::onboard::{ConfigBlock, LightingSettings, OnboardLighting, Reply};
 use crate::transport::{Confidence, DeviceCandidate, Transport};
 use crate::{Error, Result};
 
@@ -185,6 +186,88 @@ impl Dongle {
 
     pub fn hid_path(&self) -> &str {
         &self.io.path
+    }
+
+    fn read_table(&self, command: u8, size: usize) -> Result<Vec<u8>> {
+        if !KNOWN.contains(&self.id) {
+            return Err(Error::Onboard(
+                "onboard access is limited to the verified 3554:fa09 receiver".into(),
+            ));
+        }
+        let mut last_error = "incomplete receiver reply".to_string();
+        for _ in 0..3 {
+            // Discard old interrupt reports before beginning a new transaction.
+            for _ in 0..256 {
+                if self.io.receive_output_timeout(0)?.is_none() {
+                    break;
+                }
+            }
+            let mut request = [0; p::FRAME_LEN];
+            request[0] = p::REPORT_ID;
+            request[1] = command;
+            // AULA HUB sends zero-filled read requests, without a checksum.
+            self.io.send_output(&request)?;
+            let mut reply = Reply::new(command, size);
+            let start = Instant::now();
+            while start.elapsed() < Duration::from_secs(3) {
+                if let Some(frame) = self.io.receive_output_timeout(100)? {
+                    match reply.push(&frame) {
+                        Ok(Some(data)) => return Ok(data),
+                        Ok(None) => {}
+                        Err(e) => {
+                            last_error = e.to_string();
+                            break;
+                        }
+                    }
+                }
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+        Err(Error::Onboard(format!(
+            "{last_error}; wake the keyboard in 2.4 GHz mode and retry"
+        )))
+    }
+
+    pub fn read_onboard_config(&self) -> Result<ConfigBlock> {
+        ConfigBlock::parse(&self.read_table(0x44, 128)?)
+    }
+
+    pub fn read_onboard_lighting(&self) -> Result<OnboardLighting> {
+        let config = self.read_onboard_config()?;
+        OnboardLighting::from_readbacks(&config, &self.read_table(0x49, 490)?)
+    }
+
+    /// Change only lighting fields in a fresh, validated RECEIVER config.
+    /// A no-op never writes. Colors, key mappings, and other modes are preserved.
+    pub fn set_onboard_lighting(&mut self, settings: LightingSettings) -> Result<()> {
+        let before = self.read_onboard_config()?;
+        let after = before.with_settings(settings)?;
+        if before.bytes() == after.bytes() {
+            return Ok(());
+        }
+        // A partial write or failed verification also makes cached colors stale.
+        self.cache = FrameCache::default();
+        let parts: Vec<_> = after.bytes().chunks(p::CHUNK_PAYLOAD).collect();
+        for (i, part) in parts.iter().enumerate() {
+            self.io.send_output(&p::build_raw_frame(
+                p::cmd::WRITE_CONFIG,
+                parts.len() as u8,
+                i as u8,
+                part,
+            ))?;
+            // Match the official application's conservative configuration queue.
+            thread::sleep(Duration::from_millis(200));
+        }
+        thread::sleep(Duration::from_millis(400));
+        let verified = self.read_onboard_config().map_err(|e| {
+            Error::Onboard(format!(
+                "configuration was sent, but verification could not complete: {e}"
+            ))
+        })?;
+        if verified.bytes() != after.bytes() {
+            return Err(Error::Onboard("configuration readback differs after apply; no automatic retry or rollback was written".into()));
+        }
+        Ok(())
     }
 
     /// Override the inter-chunk spacing. **For experiments only.**
@@ -397,36 +480,19 @@ impl RgbDevice for Dongle {
         (1000 / p::TICK_MS) as u32
     }
 
-    /// DOES NOT write config. See below — this is a deliberate refusal.
-    ///
-    /// Command `0x04` does carry a 128-byte config block over this link, and an
-    /// earlier version of this driver wrote the WIRED [`PER_KEY_CONFIG`] into it
-    /// to force per-key mode. That **stopped a keyboard typing** and needed a
-    /// firmware reflash to recover.
-    ///
-    /// [`PER_KEY_CONFIG`]: crate::f75::protocol::PER_KEY_CONFIG
-    ///
-    /// The mistake was inferring, from one capture, that the two links share a
-    /// byte-for-byte identical config layout. The first fourteen bytes do look
-    /// alike, which is exactly what made the guess tempting. But this is
-    /// **non-volatile storage on a device that also holds the key matrix**, and
-    /// the wired path never writes a block it has not first read back and
-    /// validated. Here there is no known readback, so the block was written
-    /// blind — a foreign 128 bytes over settings we cannot see.
-    ///
-    /// Restoring this needs, in order:
-    ///
-    /// 1. A **readback** for the config over `0x13` — the 20-byte interrupt IN
-    ///    reports are the likely carrier and are not yet decoded.
-    /// 2. Read-modify-write of only the three mode bytes, never a whole block
-    ///    from another transport.
-    /// 3. `5A A5` validation before the write, as the wired path does.
-    ///
-    /// Until then the board stays in whatever mode the user left it. The cost
-    /// is that a firmware effect keeps repainting over host colours; that is a
-    /// cosmetic problem, and bricking someone's keyboard is not.
+    /// Receiver configuration is read back and validated before changing the
+    /// mode. This never sends a wired fixture or changes palette/keymap bytes.
     fn ensure_per_key_mode(&mut self) -> Result<bool> {
-        Ok(false)
+        // Experimental receivers retain host streaming without config writes.
+        if !KNOWN.contains(&self.id) {
+            return Ok(false);
+        }
+        let config = self.read_onboard_config()?;
+        if config.active()?.mode == 277 {
+            return Ok(false);
+        }
+        self.set_onboard_lighting(config.settings_for(277)?)?;
+        Ok(true)
     }
 
     fn set_static(&mut self, frame: &Frame) -> Result<()> {
