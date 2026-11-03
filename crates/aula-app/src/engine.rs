@@ -1003,6 +1003,7 @@ mod tests {
             Vec::new(),
             Ok(None),
             AppLighting::default(),
+            Default::default(),
             || {},
         );
         let deadline = Instant::now() + Duration::from_secs(25);
