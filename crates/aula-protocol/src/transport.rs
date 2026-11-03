@@ -121,18 +121,6 @@ impl Transport {
         buf.truncate(n.max(1));
         Ok(buf)
     }
-
-    /// Read an interrupt input report, including its report ID. A timeout is
-    /// distinct from a disconnected device; callers can assemble multipart replies.
-    pub fn receive_output_timeout(&self, timeout_ms: i32) -> Result<Option<Vec<u8>>> {
-        let mut buf = vec![0; self.packet_len];
-        let n = self.dev.read_timeout(&mut buf, timeout_ms)?;
-        if n == 0 {
-            return Ok(None);
-        }
-        buf.truncate(n);
-        Ok(Some(buf))
-    }
 }
 
 fn validate_output_write(sent: usize, expected: usize) -> Result<()> {

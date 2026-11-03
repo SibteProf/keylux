@@ -85,12 +85,12 @@ impl Keyboard {
 
     /// Whether this keyboard will accept a lighting-mode change.
     ///
-    /// The verified receiver now has validated readback. Other receivers are
-    /// not authorized for configuration writes by sharing the same framing.
+    /// Receiver configuration writes are disabled after reports of incorrect
+    /// native effects and sustained typing unresponsiveness.
     pub fn can_change_mode(&self) -> bool {
         match self {
             Keyboard::Wired(k) => k.can_change_mode(),
-            Keyboard::Wireless(k) => dongle::KNOWN.contains(&k.id()),
+            Keyboard::Wireless(_) => false,
         }
     }
 }

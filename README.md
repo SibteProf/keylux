@@ -32,8 +32,6 @@ genuinely surprising — and turns it into something usable.
 ## What works
 
 - Per-key static colour (permanent storage through the native F75 driver)
-- Original onboard lighting on the `3554:fa09` F75 receiver: 14 firmware
-  effects, saved palettes, brightness, speed, and single/multicolor controls
 - Native F75 animation at ~21 FPS; OpenRGB streaming capped at 20 FPS,
   adjustable downward
 - Native F75 LED map and dynamic LED order/matrix geometry from OpenRGB
@@ -205,10 +203,6 @@ Preferences remain under `~/.config/keylux`.
 that the installed command loads every bundled script outside the source tree.
 Hardware checks are separate: `keylux diagnose --device 3554:fa09` only enumerates
 the receiver, and `keylux devices --native` checks supported-device discovery.
-Factory lighting presets are firmware settings, separate from Keylux's effects
-and application profiles. `keylux onboard status --native --device 3554:fa09`
-reads the supported receiver's current effect and palettes. See Onboard lighting
-below; never apply a wired config block to a receiver.
 
 ### Other Linux distributions
 
@@ -361,46 +355,13 @@ same applies if the tray icon cannot be created.
 Preferences live in `%APPDATA%\keylux\settings.json` (or
 `~/.config/keylux/settings.json`), and can be edited or deleted by hand.
 
-## Onboard lighting
+## Onboard lighting status
 
-Keylux opens with software playback stopped. Connecting does not select a
-default effect, change lighting mode, or stream colors. Click **Start Keylux
-lighting** to begin software playback, or explicitly enable an editor preview.
-
-For the verified `3554:fa09` receiver, **Play → Onboard lighting** reads the
-current effect and its saved settings. Select a native effect, adjust its
-controls, and click **Apply onboard lighting**. The keyboard renders the
-original firmware effect, with its own palette and timing. Choosing another
-mode loads that mode's existing settings. The palette swatches show actual
-onboard RGB values; editing those palettes is not yet exposed.
-
-The onboard keyboard preview animates locally using the selected effect,
-saved palette, brightness, speed, and multicolor setting. It is an illustrative
-simulation, not an exact reproduction of the firmware's animation or timing.
-Reactive effects demonstrate simulated key presses. Previewing never streams
-frames to the keyboard; **Apply onboard lighting** selects the original firmware
-effect. Custom per-key colors are not yet available for preview.
-
-Pausing or quitting a receiver software-playback session restores the native
-effect observed just before that session. Restoration uses a fresh receiver
-read and preserves other settings. A disconnected receiver cannot be restored
-while disconnected; select the desired onboard effect after reconnecting.
-
-```bash
-keylux onboard list
-keylux onboard status --native --device 3554:fa09
-keylux onboard apply "Dream Rainbow" --native --device 3554:fa09
-keylux onboard apply Drifting --brightness 2 --speed 4 --multicolor --native --device 3554:fa09
-```
-
-`status` is read-only. `apply` updates persistent lighting settings through a
-complete, checksum- and signature-validated receiver read. It never substitutes
-a wired config block or writes factory defaults over key mappings. The speed
-field is four bits (16 levels); brightness has 21 levels. This native interface
-is currently verified only for the receiver, not every device sold as F75.
-
-Firmware effects and their stored palettes are supported directly; Keylux does
-not extract the firmware's animation code or provide a factory-reset command.
+The onboard controls introduced in PR #22 have been withdrawn after reports of
+incorrect effect mappings and sustained typing unresponsiveness on hardware.
+Keylux no longer reads or writes receiver configuration, selects native modes,
+or restores native modes when software playback stops. Use Keylux software
+lighting instead. NixOS packaging remains available.
 
 ## Application lighting profiles
 

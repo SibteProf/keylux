@@ -33,8 +33,8 @@
 //!   charging indicator included.
 //! * **Config writes are disruptive.** They drop the board out of per-key mode
 //!   and trigger an asynchronous repaint that overwrites in-flight frames. The
-//!   configuration paths use validated read-modify-write and wait for the
-//!   repaint to settle. GUI startup does not change the lighting mode.
+//!   config write is private; only [`RgbDevice::ensure_per_key_mode`] performs
+//!   one, and it waits for the repaint to settle.
 //! * **Config reads are validated** against the `5A A5` signature. The firmware
 //!   returns truncated all-zero buffers while busy, and writing one back would
 //!   corrupt the config block.
@@ -52,7 +52,6 @@ pub mod device;
 pub mod dongle;
 pub mod f75;
 pub mod keyboard;
-pub mod onboard;
 pub mod openrgb;
 pub mod transport;
 
@@ -65,8 +64,6 @@ pub use transport::{Choice, Confidence, DeviceCandidate, ScanOptions};
 /// Errors this crate can produce.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    #[error("onboard lighting: {0}")]
-    Onboard(String),
     #[error("{0}")]
     UnsupportedHardware(&'static str),
 

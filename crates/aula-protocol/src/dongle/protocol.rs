@@ -3,13 +3,22 @@
 //! A DIFFERENT protocol from the wired one, on a different USB device. Decoded
 //! from a USBPcap capture of AULA F75 v2.0; see `docs/PROTOCOL.md`.
 //!
-//! # Configuration safety
+//! # SAFETY: this driver sends ONE command
 //!
-//! Onboard reads use the official driver's `0x44` configuration and `0x49`
-//! palette requests. Configuration writes (`0x04`) are restricted to fresh,
-//! complete, signature-checked receiver data; see `crate::onboard`.
-//! A historical attempt to send a WIRED fixture through the receiver stopped
-//! a keyboard typing. Never substitute fixture/default bytes for a device read.
+//! Only `0x88` (lighting), which is volatile — it paints and stores nothing.
+//!
+//! `0x04` carries a 128-byte config block and is DECODED BUT NEVER SENT. An
+//! earlier version wrote the wired protocol's config block through it to force
+//! per-key mode, on the inference that both links share a byte-identical
+//! layout. It stopped a keyboard typing and needed a firmware reflash. That
+//! block is non-volatile storage on a device that also holds the key matrix.
+//! PR #22 later added receiver readback and configuration writes, but those
+//! controls were withdrawn after reports of incorrect effects and unresponsive
+//! typing. Readback validation alone does not prove safe firmware behavior.
+//!
+//! The rule the wired path already had, and this one now shares: never write a
+//! config block you have not read back and validated first. Receiver writes
+//! remain disabled pending hardware validation of the field layout and modes.
 //!
 //! Frame (HID **output** report, 20 bytes):
 //!
@@ -47,13 +56,27 @@ pub mod cmd {
     /// driver sends.
     pub const LIGHTING: u8 = 0x88;
 
-    /// Writes a freshly read, validated 128-byte receiver configuration.
+    /// Writes the 128-byte config block. **NOT SENT — see the module docs.**
+    ///
+    /// Kept as documentation of what was decoded, not as something to call.
+    /// Writing a config block assembled from the wired protocol's bytes stopped
+    /// a keyboard typing and needed a firmware reflash.
     pub const WRITE_CONFIG: u8 = 0x04;
 }
 
-/// Raw-length framing used by verified receiver configuration transactions.
-/// Kept crate-private so arbitrary vendor writes are not exposed as public API.
-pub(crate) fn build_raw_frame(cmd: u8, chunks: u8, index: u8, payload: &[u8]) -> [u8; FRAME_LEN] {
+#[cfg(test)]
+/// Frame builder for the config family, whose length byte is RAW.
+///
+/// **Deliberately private.** The framing is decoded and tested, but nothing in
+/// this crate may send a config write until there is a readback to do
+/// read-modify-write against — see [`crate::dongle::Dongle::ensure_per_key_mode`].
+/// Making it private is the guard: a future caller has to come here and read
+/// this comment before it can reach for it.
+///
+/// Only the lighting family biases the length byte. Captured config chunks
+/// carry `0x0e` for a full 14-byte payload and `0x02` for the two-byte tail
+/// holding the `5A A5` signature.
+fn build_raw_frame(cmd: u8, chunks: u8, index: u8, payload: &[u8]) -> [u8; FRAME_LEN] {
     debug_assert!(payload.len() <= CHUNK_PAYLOAD, "payload overruns the frame");
     let mut f = [0u8; FRAME_LEN];
     f[0] = REPORT_ID;

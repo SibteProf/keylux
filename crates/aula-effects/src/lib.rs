@@ -13,7 +13,6 @@ pub mod builtin;
 pub mod composition;
 pub mod generators;
 pub mod import;
-pub mod onboard_preview;
 pub mod params;
 pub mod registry;
 pub mod script;

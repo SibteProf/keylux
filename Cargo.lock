@@ -501,7 +501,6 @@ version = "0.5.1"
 dependencies = [
  "anyhow",
  "hidapi",
- "serde_json",
  "thiserror 2.0.20",
 ]
 
