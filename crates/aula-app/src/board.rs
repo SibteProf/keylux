@@ -15,25 +15,6 @@ use aula_protocol::{Frame, KeyPos, Rgb};
 
 use crate::theme;
 
-/// Read-only preview card shared by the software and onboard lighting panels.
-pub fn preview(ui: &mut egui::Ui, layout: &[KeyPos], frame: &Frame, status: &str) {
-    theme::surface(ui, |ui| {
-        ui.horizontal_wrapped(|ui| {
-            ui.label(egui::RichText::new("Keyboard preview").strong());
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                theme::muted(ui, status);
-            });
-        });
-        ui.add_space(10.0);
-        let height = (ui.available_width() * 0.30).clamp(160.0, 230.0);
-        let (rect, _) = ui.allocate_exact_size(
-            egui::vec2(ui.available_width(), height),
-            egui::Sense::hover(),
-        );
-        draw_board(ui, rect, layout, frame);
-    });
-}
-
 /// Where each LED landed on screen, so input can be mapped back to LEDs.
 pub struct BoardGeom {
     boxes: Vec<(egui::Rect, usize)>,
