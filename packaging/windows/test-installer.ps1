@@ -34,7 +34,7 @@ try {
     $exe = Join-Path $installDir 'keylux.exe'
     if (-not (Test-Path $exe)) { throw 'Custom installation folder was not used' }
     $version = (Invoke-Keylux '--version').Trim()
-    if ((Get-ItemProperty $runKey).Keylux -ne ('"' + $exe + '"')) { throw 'Startup was not migrated' }
+    if ((Get-ItemProperty $runKey).Keylux -ne ('"' + $exe + '" --sign-in')) { throw 'Startup was not migrated' }
     $listing = Invoke-Keylux 'list'
     if ($listing -notmatch 'spiral') { throw 'Installed effects did not load' }
     $userEffects = Join-Path $env:APPDATA 'keylux/content/effects'
