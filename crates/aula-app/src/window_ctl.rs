@@ -47,32 +47,6 @@ impl WindowRef {
         }
     }
 
-    /// Keep the window out of view even if eframe makes it visible while painting.
-    pub fn set_cloaked(self, cloaked: bool) -> bool {
-        #[cfg(target_os = "windows")]
-        {
-            use windows_sys::Win32::{
-                Foundation::{BOOL, HWND},
-                Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_CLOAK},
-            };
-            let value: BOOL = i32::from(cloaked);
-            // The handle belongs to our live window. DWMWA_CLOAK expects a BOOL.
-            unsafe {
-                DwmSetWindowAttribute(
-                    self.hwnd as HWND,
-                    DWMWA_CLOAK as u32,
-                    (&value as *const BOOL).cast(),
-                    std::mem::size_of::<BOOL>() as u32,
-                ) >= 0
-            }
-        }
-        #[cfg(not(target_os = "windows"))]
-        {
-            let _ = cloaked;
-            false
-        }
-    }
-
     /// Un-hide, un-minimise and raise the window. Safe to call from any thread.
     pub fn show(self) {
         #[cfg(target_os = "windows")]
@@ -81,7 +55,6 @@ impl WindowRef {
                 SetForegroundWindow, ShowWindow, SW_RESTORE, SW_SHOW,
             };
             let hwnd = self.hwnd as windows_sys::Win32::Foundation::HWND;
-            self.set_cloaked(false);
             // SW_SHOW undoes the hide; SW_RESTORE additionally un-minimises,
             // which matters because minimising is one of the ways we hide.
             ShowWindow(hwnd, SW_SHOW);
