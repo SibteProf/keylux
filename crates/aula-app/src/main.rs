@@ -5,8 +5,8 @@
 
 //! `keylux` — desktop keyboard lighting through native AULA and OpenRGB drivers.
 //!
-//! Runs the GUI by default. Any argument drops to the CLI, which is handy for
-//! scripting and for hardware checks without a window.
+//! Runs the GUI by default. The Windows sign-in flag also opens the GUI.
+//! Other arguments go to the CLI.
 
 mod backend;
 mod board;
@@ -75,17 +75,27 @@ fn animations_dir(effects: &std::path::Path) -> std::path::PathBuf {
 }
 
 fn main() -> anyhow::Result<()> {
-    if std::env::args().len() > 1 {
+    let mut args = std::env::args_os().skip(1);
+    let first_arg = args.next();
+    #[cfg(target_os = "windows")]
+    let sign_in_launch = first_arg.as_deref() == Some(std::ffi::OsStr::new(startup::SIGN_IN_ARG))
+        && args.next().is_none();
+    #[cfg(not(target_os = "windows"))]
+    let sign_in_launch = false;
+    if first_arg.is_some() && !sign_in_launch {
         return cli::run();
     }
 
     let dir = effects_dir();
+    let settings = settings::Settings::load();
+    let start_in_tray = sign_in_launch && settings.start_in_tray;
     let (rgba, w, h) = tray::icon_rgba();
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_inner_size([1180.0, 780.0])
             .with_min_inner_size([760.0, 560.0])
             .with_title("keylux")
+            .with_active(!start_in_tray)
             // The taskbar/title-bar icon, same mark as the tray, instead of
             // eframe's default "e".
             .with_icon(eframe::egui::IconData {
@@ -105,7 +115,7 @@ fn main() -> anyhow::Result<()> {
     eframe::run_native(
         "keylux",
         options,
-        Box::new(move |cc| Ok(Box::new(ui::App::new(cc, dir)))),
+        Box::new(move |cc| Ok(Box::new(ui::App::new(cc, dir, settings, start_in_tray)))),
     )
     .map_err(|e| anyhow::anyhow!("{e}"))
 }

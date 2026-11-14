@@ -1,15 +1,21 @@
 # AULA F75 Wired: USB 1A2C:9407
 
-Issue [#17](https://github.com/SibteProf/keylux/issues/17) reports an AULA F75
-Wired, revision `0111`, described by Windows as USB Gaming Keyboard, using
-`1a2c:9407`. Keylux recognizes this reported variant, but **does not yet support
-its lighting protocol**. Per-key colors and custom animations are unavailable.
+[Issue #17](https://github.com/SibteProf/keylux/issues/17) reports an AULA F75
+Wired, revision `0111`, using `1a2c:9407`. Keylux detects this variant.
+Per-key colors and custom animations are unavailable.
 
-The native driver was verified on `258a:010c`. The shared F75 name and the fact
-that the official application detects this variant do not establish compatible
-commands, RGB capabilities, LED ordering, or streaming limits. Adding the new
-ID to that driver would claim support without evidence. OpenRGB support for
-other keyboards does not establish support for this variant either.
+[NeilJohnnny's report](https://github.com/SibteProf/keylux/issues/17#issuecomment-6529837722)
+links to the AULA F75 Wired Version 1.0.3.4 installer. The diagnostic lists two
+vendor HID collections on interface 1, with usage pages `ff00` and `ff01`, both
+with usage `0001`. It contains no lighting commands or evidence of per-key
+color control.
+
+The installer's `config.xml` associates `1a2c:9407` with the single-color F75
+Wired and points to `KB-K102.xml`. That layout lists lighting modes and
+brightness and speed settings. Whether those settings work on revision
+`0111` still needs a hardware check. The native Keylux RGB driver was
+verified on `258a:010c`.
+[AULA describes the F75 Wired Version as having fixed backlighting](https://aulagear.com/products/aula-f75-wired-version).
 
 ## Collect diagnostics from the release package
 
@@ -31,22 +37,15 @@ variant from the Sinowealth protocol probe, including when it is allow-listed.
 The GUI and `keylux devices --native` explain the unsupported variant when it
 is connected. The device picker only includes keyboards that can be controlled.
 
-## What is needed for a driver
+## Check what the official app can control
 
-A volunteer with this exact device needs to provide the diagnostic report,
-the official software version/download source, and USBPcap captures of its
-available lighting operations. Capture only this keyboard's USB traffic and
-avoid typing sensitive information while recording. Useful separate captures:
+If you own this variant, report which lighting controls in the AULA app
+visibly change the keyboard. A screenshot of the lighting tab is enough to
+start. If a control works, a short USBPcap capture while applying and restoring
+that one setting would help identify the command. Capture only the keyboard's
+USB traffic and avoid typing during the recording.
 
-1. Open the official software and read the current settings.
-2. If per-key editing exists, change one known key to red, green, then blue.
-3. Change the whole board to a solid color and restore it.
-4. If the software streams host-generated effects, record a short animation.
-
-The presence of a per-key editor or host streaming must be checked; fixed
-firmware effects alone do not prove either capability. Do not try firmware
-updates, guessed commands, the existing driver's writes, or random report IDs.
-The implementation needs verified packet fixtures, a physical LED map, and
-hardware tests for colors, typing reliability, reconnects, and write pacing
-before this variant can be advertised as supported. Issue #17 remains open
-until those requirements are met.
+Per-key RGB would need evidence that the board can set different colors on
+individual keys. Custom animations would also need evidence that it accepts
+repeated frame updates from the PC. A brightness change or a built-in effect
+would establish support for that specific control.
