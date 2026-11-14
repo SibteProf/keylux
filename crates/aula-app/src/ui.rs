@@ -35,7 +35,6 @@ pub struct App {
     anim_dir: std::path::PathBuf,
     tab: Tab,
     editor: Option<Editor>,
-    last_tick: std::time::Instant,
     notice: Option<String>,
     effect_query: String,
     sidebar_visible: bool,
@@ -50,6 +49,8 @@ pub struct App {
     /// `None` when the tray could not be created. Everything that hides the
     /// window checks this first — without a tray there would be no way back.
     tray: Option<Tray>,
+    /// Hide the cloaked window on the first frame.
+    start_in_tray: bool,
     /// `None` on platforms with no way to show a hidden window from off the UI
     /// thread. Hiding is refused there for the same reason.
     window: Option<WindowRef>,
@@ -67,8 +68,12 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(cc: &eframe::CreationContext<'_>, effects_dir: std::path::PathBuf) -> Self {
-        let settings = Settings::load();
+    pub fn new(
+        cc: &eframe::CreationContext<'_>,
+        effects_dir: std::path::PathBuf,
+        settings: Settings,
+        start_in_tray: bool,
+    ) -> Self {
         theme::install_fonts(&cc.egui_ctx);
         cc.egui_ctx
             .set_zoom_factor(settings.ui_scale.clamp(0.8, 2.0));
@@ -91,6 +96,8 @@ impl App {
         // since egui cannot repaint one and so never runs `update` for it.
         let window = WindowRef::capture(cc);
 
+        // eframe has created the native window but has yet to show it.
+        let cloaked = start_in_tray && window.is_some_and(|w| w.set_cloaked(true));
         let tray = {
             let ctx = cc.egui_ctx.clone();
             let tx = engine.sender();
@@ -115,6 +122,12 @@ impl App {
             })
         };
 
+        let start_in_tray = cloaked && tray.is_some();
+        if cloaked && tray.is_none() {
+            if let Some(window) = window {
+                window.set_cloaked(false);
+            }
+        }
         engine.send(Cmd::SetMaxFps(settings.max_fps));
         let (startup_enabled, startup_error) = match startup::enabled() {
             Ok(enabled) => (enabled, None),
@@ -130,7 +143,6 @@ impl App {
             anim_dir,
             tab: Tab::Play,
             editor: None,
-            last_tick: std::time::Instant::now(),
             notice: None,
             effect_query: String::new(),
             sidebar_visible: true,
@@ -141,6 +153,7 @@ impl App {
 
             settings,
             tray,
+            start_in_tray,
             window,
             confirm_close: false,
             remember_choice: false,
@@ -205,6 +218,11 @@ impl App {
 
     /// Tray clicks, minimise-to-tray, and the close button.
     fn window_lifecycle(&mut self, ctx: &egui::Context, running: bool, status: &str) {
+        if std::mem::take(&mut self.start_in_tray) {
+            // eframe shows the native window before applying viewport commands.
+            // Windows keeps it out of view until a tray action uncloaks it.
+            self.hide_to_tray(ctx, running);
+        }
         if let Some(tray) = self.tray.as_mut() {
             tray.sync(running, status);
         }
@@ -585,6 +603,16 @@ impl App {
                         self.startup_error = Some(format!("Could not change startup: {error}"))
                     }
                 }
+            }
+            if cfg!(target_os = "windows")
+                && ui
+                    .checkbox(&mut self.settings.start_in_tray, "Start in tray")
+                    .on_hover_text(
+                        "Keep the window in the system tray when Keylux launches at sign-in.",
+                    )
+                    .changed()
+            {
+                self.settings.save();
             }
             if !startup::supported() {
                 theme::muted(
@@ -1346,8 +1374,6 @@ impl eframe::App for App {
             }
 
             if self.tab == Tab::Create {
-                let dt = self.last_tick.elapsed().as_secs_f32();
-                self.last_tick = std::time::Instant::now();
                 let anim_dir = self.anim_dir.clone();
                 let saved = self.editor.as_ref().map_or(true, |ed| !ed.dirty);
                 let mut new_composition = false;
@@ -1365,7 +1391,7 @@ impl eframe::App for App {
                     self.editor = Some(Editor::new(frame.len().max(1)));
                 }
                 if let Some(ed) = self.editor.as_mut() {
-                    ed.tick(dt);
+                    ed.tick(ctx.input(|input| input.stable_dt));
                     let matching_size = ed.comp.leds == frame.len();
                     let can_stream = matching_size && matches!(&status, DeviceStatus::Connected { .. });
                     if !can_stream {
@@ -1378,7 +1404,15 @@ impl eframe::App for App {
                     if !matching_size {
                         ui.colored_label(pal.warning, format!("This composition has {} LEDs; the keyboard has {}. Create a new composition for this keyboard. Your existing work is preserved.", ed.comp.leds, frame.len()));
                     }
+                    if let Some(result) =
+                        self.engine.shared.lock().unwrap().last_nvram_result.take()
+                    {
+                        ed.nvram_result = Some(result);
+                    }
                     editor::show(ui, ed, &layout, &anim_dir, can_save && matching_size, can_stream);
+                    if ed.playing {
+                        ctx.request_repaint_after(std::time::Duration::from_millis(16));
+                    }
                     if ed.frame_requested {
                         ed.frame_requested = false;
                         let f = ed.preview_frame(ed.comp.leds, &layout);
@@ -1387,11 +1421,6 @@ impl eframe::App for App {
                         }
                     }
 
-                    if let Some(result) =
-                        self.engine.shared.lock().unwrap().last_nvram_result.take()
-                    {
-                        ed.nvram_result = Some(result);
-                    }
                     // Stream the editor's preview to the board while the toggle
                     // is on, so the keyboard follows the brush.
                     if ed.live {
@@ -1404,7 +1433,6 @@ impl eframe::App for App {
                 }
                 return;
             }
-            self.last_tick = std::time::Instant::now();
 
             egui::ScrollArea::vertical().id_salt("play-workspace").show(ui, |ui| {
             if !show_sidebar {

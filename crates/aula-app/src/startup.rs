@@ -5,6 +5,9 @@
 #[path = "startup/linux.rs"]
 mod linux;
 
+#[cfg(target_os = "windows")]
+pub const SIGN_IN_ARG: &str = "--sign-in";
+
 pub fn supported() -> bool {
     cfg!(any(target_os = "windows", target_os = "linux"))
 }
@@ -50,6 +53,7 @@ pub fn set_enabled(enabled: bool) -> Result<(), String> {
 
 #[cfg(target_os = "windows")]
 mod windows {
+    use super::SIGN_IN_ARG;
     use std::{os::windows::ffi::OsStrExt, path::Path, ptr};
     use windows_sys::Win32::{
         Foundation::{ERROR_FILE_NOT_FOUND, ERROR_SUCCESS},
@@ -111,7 +115,7 @@ mod windows {
     }
 
     /// Quotes the executable as one argument, including spaces and Unicode.
-    /// No shell, CLI arguments, or working-directory assumptions are involved.
+    /// Marks the launch so the GUI can apply the user's sign-in preference.
     pub(super) fn command(exe: &Path) -> Result<Vec<u16>, String> {
         if !exe.is_absolute() {
             return Err("The startup executable must have an absolute path.".into());
@@ -120,12 +124,14 @@ mod windows {
         if path.iter().any(|&c| c == 0 || c == u16::from(b'"')) {
             return Err("The startup executable path is invalid.".into());
         }
-        if path.len() + 2 > 260 {
+        let suffix = format!("\" {SIGN_IN_ARG}");
+        if path.len() + 1 + suffix.len() > 260 {
             return Err("Move keylux to a shorter folder path before enabling startup.".into());
         }
         Ok(std::iter::once(u16::from(b'"'))
             .chain(path)
-            .chain([u16::from(b'"'), 0])
+            .chain(suffix.encode_utf16())
+            .chain(Some(0))
             .collect())
     }
 
@@ -235,7 +241,7 @@ mod windows {
             let value = command(Path::new(r"C:\My Apps\کیlux\keylux.exe")).unwrap();
             assert_eq!(
                 String::from_utf16(&value[..value.len() - 1]).unwrap(),
-                "\"C:\\My Apps\\کیlux\\keylux.exe\""
+                "\"C:\\My Apps\\کیlux\\keylux.exe\" --sign-in"
             );
             assert_eq!(value.last(), Some(&0));
             assert!(command(Path::new("keylux.exe")).is_err());

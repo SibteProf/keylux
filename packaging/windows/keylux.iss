@@ -53,6 +53,9 @@ Name: "{autodesktop}\Keylux"; Filename: "{app}\keylux.exe"; WorkingDir: "{app}";
 Filename: "{app}\keylux.exe"; Description: "Launch Keylux"; Flags: nowait postinstall skipifsilent
 
 [Code]
+const
+  SignInSuffix = ' --sign-in';
+
 // Move an existing startup registration to the installed executable. Do not
 // enable startup for users who have never enabled it in Keylux.
 procedure CurStepChanged(CurStep: TSetupStep);
@@ -61,14 +64,18 @@ begin
   if CurStep = ssPostInstall then
     if RegQueryStringValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run', 'Keylux', Command) then
       if Command <> '' then
-        RegWriteStringValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run', 'Keylux', '"' + ExpandConstant('{app}\keylux.exe') + '"');
+        RegWriteStringValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run', 'Keylux', '"' + ExpandConstant('{app}\keylux.exe') + '"' + SignInSuffix);
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
-var Command: String;
+var Command, InstalledCommand: String;
 begin
   if CurUninstallStep = usUninstall then
     if RegQueryStringValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run', 'Keylux', Command) then
-      if CompareText(Command, '"' + ExpandConstant('{app}\keylux.exe') + '"') = 0 then
+    begin
+      InstalledCommand := '"' + ExpandConstant('{app}\keylux.exe') + '"';
+      if (CompareText(Command, InstalledCommand) = 0) or
+         (CompareText(Command, InstalledCommand + SignInSuffix) = 0) then
         RegDeleteValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run', 'Keylux');
+    end;
 end;
