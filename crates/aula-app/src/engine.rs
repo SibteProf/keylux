@@ -270,6 +270,7 @@ fn run(
         params = app_lighting.default.restore(&reg.entries[i].meta.params);
     }
     publish_selection(&shared, selected, &params);
+    repaint();
     let mut applied_profile: Option<Selection> = None;
     let mut last_foreground_poll: Option<Instant> = None;
     let mut restore_default = false;
@@ -284,6 +285,10 @@ fn run(
     let mut fps_window = Instant::now();
     let mut fps_frames = 0u32;
     let mut last_rescan = Instant::now();
+    let mut last_frame_repaint = Instant::now();
+    // The desktop preview has its own refresh budget. Hardware output keeps
+    // the rate selected for the device.
+    const FRAME_REPAINT_INTERVAL: Duration = Duration::from_millis(16);
 
     let mut opts = ScanOptions {
         allow,
@@ -300,6 +305,7 @@ fn run(
     let mut write_failures = 0u32;
 
     loop {
+        let mut ui_changed = false;
         // ---- commands ----
         loop {
             match rx.try_recv() {
@@ -310,6 +316,7 @@ fn run(
                         params = current_params(&reg, selected);
                         effect_start = Instant::now();
                         publish_selection(&shared, selected, &params);
+                        ui_changed = true;
                         applied_profile = None;
                     }
                 }
@@ -322,6 +329,7 @@ fn run(
                     if shared.lock().unwrap().selection_revision == revision {
                         params = p;
                         publish_selection(&shared, selected, &params);
+                        ui_changed = true;
                         applied_profile = None;
                     }
                 }
@@ -339,7 +347,12 @@ fn run(
                 }
                 Ok(Cmd::SetRunning(r)) => {
                     running = r;
-                    shared.lock().unwrap().running = r;
+                    let mut s = shared.lock().unwrap();
+                    ui_changed |= s.running != r;
+                    s.running = r;
+                    if !r {
+                        s.fps = 0.0;
+                    }
                 }
                 Ok(Cmd::SetMaxFps(f)) => {
                     max_fps = f;
@@ -360,7 +373,9 @@ fn run(
                     needs_scan = true;
                     last_open_attempt = None;
                     live_preview = None;
-                    shared.lock().unwrap().pinned = pinned.clone();
+                    let mut s = shared.lock().unwrap();
+                    ui_changed |= s.pinned != pinned;
+                    s.pinned = pinned.clone();
                 }
                 Ok(Cmd::ConfigureOpenRgb(value)) => {
                     endpoint = value;
@@ -386,6 +401,7 @@ fn run(
                     needs_scan = false;
                     let mut s = shared.lock().unwrap();
                     s.scanning = false;
+                    ui_changed = true;
                 }
                 Ok(Cmd::Rescan) => {
                     let id = reg.entries.get(selected).map(|e| e.meta.id.clone());
@@ -394,6 +410,7 @@ fn run(
                     params = merge_params(&reg, selected, params);
                     publish_effects(&shared, &reg);
                     publish_selection(&shared, selected, &params);
+                    ui_changed = true;
                     applied_profile = None;
                 }
                 Ok(Cmd::LivePreview(frame)) => {
@@ -439,6 +456,7 @@ fn run(
                 params = merge_params(&reg, selected, params);
                 publish_effects(&shared, &reg);
                 publish_selection(&shared, selected, &params);
+                ui_changed = true;
                 applied_profile = None;
             }
         }
@@ -455,11 +473,15 @@ fn run(
                 // Rediscover on every disconnected retry, as well as manual scans.
                 let found = discover(&mut discovery_cache, &opts, &endpoint, needs_scan);
                 let candidates = found.candidates;
-                shared.lock().unwrap().discovery_warnings = found.warnings;
-                publish_devices(&shared, &candidates, pinned.as_deref());
+                {
+                    let mut s = shared.lock().unwrap();
+                    ui_changed |= s.discovery_warnings != found.warnings;
+                    s.discovery_warnings = found.warnings;
+                }
+                ui_changed |= publish_devices(&shared, &candidates, pinned.as_deref());
                 needs_scan = false;
 
-                match backend::choose(&candidates, pinned.as_deref()) {
+                let disconnected_status = match backend::choose(&candidates, pinned.as_deref()) {
                     Some(i) => {
                         let cand = candidates[i].clone();
                         match Device::open(&cand, endpoint.as_ref().ok().copied().flatten()) {
@@ -487,18 +509,17 @@ fn run(
                                         write_failures = 0;
                                         live_preview = None;
                                         device = Some(kb);
+                                        ui_changed = true;
+                                        None
                                     }
-                                    Err(e) => {
-                                        s.status = DeviceStatus::Disconnected(e.to_string());
-                                    }
+                                    Err(e) => Some(DeviceStatus::Disconnected(e.to_string())),
                                 }
                             }
                             Err(e) => {
                                 // The path went stale between enumerating and
                                 // opening; a fresh probe is the fix.
                                 needs_scan = true;
-                                shared.lock().unwrap().status =
-                                    DeviceStatus::Disconnected(e.to_string());
+                                Some(DeviceStatus::Disconnected(e.to_string()))
                             }
                         }
                     }
@@ -515,16 +536,21 @@ fn run(
                             .find(|d| &d.id == id)
                             .map(|d| d.label.clone())
                             .unwrap_or_else(|| id.to_string());
-                        shared.lock().unwrap().status = DeviceStatus::Waiting {
+                        Some(DeviceStatus::Waiting {
                             pinned: id.clone(),
                             label,
-                        };
+                        })
                     }
                     None => {
                         let warning = shared.lock().unwrap().discovery_warnings.first().cloned();
-                        shared.lock().unwrap().status = DeviceStatus::Disconnected(
-                            warning.unwrap_or_else(|| "No compatible keyboard found. Connect a supported AULA F75, or start OpenRGB's SDK server for other models. See Settings for scan details.".into()));
+                        Some(DeviceStatus::Disconnected(
+                            warning.unwrap_or_else(|| "No compatible keyboard found. Connect a supported AULA F75, or start OpenRGB's SDK server for other models. See Settings for scan details.".into())))
                     }
+                };
+                if let Some(status) = disconnected_status {
+                    let mut s = shared.lock().unwrap();
+                    ui_changed |= s.status != status;
+                    s.status = status;
                 }
             }
         }
@@ -560,17 +586,22 @@ fn run(
                         params = selection.preset.restore(&reg.entries[selected].meta.params);
                         effect_start = Instant::now();
                         publish_selection(&shared, selected, &params);
+                        ui_changed = true;
                         applied_profile = Some(selection);
                     }
-                    shared.lock().unwrap().profile_status = status;
+                    let mut s = shared.lock().unwrap();
+                    ui_changed |= s.profile_status != status;
+                    s.profile_status = status;
                 }
                 restore_default = false;
             }
         }
 
         let Some(kb) = device.as_mut() else {
+            if ui_changed {
+                repaint();
+            }
             std::thread::sleep(Duration::from_millis(200));
-            repaint();
             continue;
         };
 
@@ -580,6 +611,7 @@ fn run(
             if preview.len() != kb.led_count() {
                 live_preview = None;
                 shared.lock().unwrap().errors.push("Preview size does not match the selected keyboard; reopen or recreate the animation.".into());
+                repaint();
                 continue;
             }
             let output = calibrations
@@ -602,10 +634,15 @@ fn run(
                         device = None;
                         live_preview = None;
                         needs_scan = true;
+                        ui_changed = true;
                     }
                 }
             }
-            repaint();
+            // The editor draws its own preview. Hardware writes here only
+            // need to wake the UI if device or effect state changed.
+            if ui_changed {
+                repaint();
+            }
             std::thread::sleep(Duration::from_millis(2));
             continue;
         }
@@ -621,6 +658,7 @@ fn run(
                 params = current_params(&reg, selected);
                 effect_start = Instant::now();
                 publish_selection(&shared, selected, &params);
+                ui_changed = true;
                 applied_profile = None;
             }
         }
@@ -630,12 +668,10 @@ fn run(
         // Blanking it and then streaming black would be all of the cost and
         // none of the point.
         if !running {
-            {
-                let mut s = shared.lock().unwrap();
-                s.fps = 0.0;
+            if ui_changed {
+                repaint();
             }
             std::thread::sleep(Duration::from_millis(60));
-            repaint();
             continue;
         }
 
@@ -665,6 +701,7 @@ fn run(
             let mut s = shared.lock().unwrap();
             if s.script_error != script_error {
                 s.script_error = script_error;
+                ui_changed = true;
             }
         }
 
@@ -702,11 +739,15 @@ fn run(
                     // Whatever is plugged in may have changed, so the next
                     // open attempt must probe rather than reuse the old list.
                     needs_scan = true;
+                    ui_changed = true;
                 }
             }
         }
 
-        repaint();
+        if ui_changed || last_frame_repaint.elapsed() >= FRAME_REPAINT_INTERVAL {
+            last_frame_repaint = Instant::now();
+            repaint();
+        }
 
         // stream() already enforces the hardware minimum gap; this just avoids
         // spinning when the effect renders faster than the device can accept.
@@ -714,10 +755,6 @@ fn run(
     }
 }
 
-/// Publish the picker's device list.
-///
-/// A pinned device that is not plugged in keeps its row, marked absent: a pin
-/// that silently disappears from the list looks like the app forgetting it.
 fn publish_selection(shared: &Arc<Mutex<Shared>>, selected: usize, params: &Params) {
     let mut state = shared.lock().unwrap();
     state.selected = selected;
@@ -726,7 +763,13 @@ fn publish_selection(shared: &Arc<Mutex<Shared>>, selected: usize, params: &Para
     state.script_error = None;
 }
 
-fn publish_devices(shared: &Arc<Mutex<Shared>>, candidates: &[Candidate], pinned: Option<&str>) {
+/// Publish the picker's device list and report whether it changed.
+/// Keep an absent row for an unplugged pinned device.
+fn publish_devices(
+    shared: &Arc<Mutex<Shared>>,
+    candidates: &[Candidate],
+    pinned: Option<&str>,
+) -> bool {
     let mut devices: Vec<DeviceEntry> = candidates
         .iter()
         .map(|c| DeviceEntry {
@@ -768,8 +811,10 @@ fn publish_devices(shared: &Arc<Mutex<Shared>>, candidates: &[Candidate], pinned
     }
 
     let mut s = shared.lock().unwrap();
+    let changed = s.devices != devices || s.pinned.as_deref() != pinned;
     s.devices = devices;
     s.pinned = pinned.map(str::to_string);
+    changed
 }
 
 fn discover(

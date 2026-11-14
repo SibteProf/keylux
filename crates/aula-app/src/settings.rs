@@ -36,6 +36,8 @@ pub enum ColorTheme {
 #[serde(default)]
 pub struct Settings {
     pub close_action: CloseAction,
+    /// Open the Windows app in the tray when it launches at sign-in.
+    pub start_in_tray: bool,
     /// Hide the window to the tray when minimised, instead of leaving it on
     /// the taskbar.
     pub minimize_to_tray: bool,
@@ -74,6 +76,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             close_action: CloseAction::Ask,
+            start_in_tray: true,
             minimize_to_tray: true,
             run_in_background: true,
             max_fps: aula_protocol::f75::protocol::MAX_FPS,
@@ -212,6 +215,7 @@ mod tests {
     fn round_trips() {
         let s = Settings {
             close_action: CloseAction::Tray,
+            start_in_tray: false,
             minimize_to_tray: false,
             run_in_background: false,
             max_fps: 12,
@@ -223,6 +227,7 @@ mod tests {
         let json = serde_json::to_string(&s).unwrap();
         let back: Settings = serde_json::from_str(&json).unwrap();
         assert_eq!(back.close_action, CloseAction::Tray);
+        assert!(!back.start_in_tray);
         assert!(!back.minimize_to_tray);
         assert!(!back.run_in_background);
         assert_eq!(back.max_fps, 12);
@@ -237,6 +242,7 @@ mod tests {
     fn missing_and_bad_fields_fall_back_to_defaults() {
         let partial: Settings = serde_json::from_str(r#"{"close_action":"quit"}"#).unwrap();
         assert_eq!(partial.close_action, CloseAction::Quit);
+        assert!(partial.start_in_tray);
         assert!(partial.minimize_to_tray, "unset fields keep their default");
         // A file written before this feature existed must still mean
         // "automatic", not "pinned to nothing".

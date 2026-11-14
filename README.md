@@ -97,7 +97,7 @@ use the existing limited palette.
 
 ### Windows installation
 
-Run `Keylux-0.5.1-Setup-x64.exe`. Choose an installation folder; the default is
+Run `Keylux-0.5.2-Setup-x64.exe`. Choose an installation folder; the default is
 `C:\Program Files (x86)\Keylux`. Setup requests administrator access, installs
 for all users, adds a Start menu shortcut, and offers an
 optional desktop shortcut. Later
@@ -127,6 +127,13 @@ attach it alongside the portable archive.
 On Windows and Linux, enable **Settings → Startup → Run at startup** to launch
 keylux whenever you sign in to your desktop. Changes apply immediately, and the
 checkbox reads the actual startup registration.
+
+On Windows, keylux starts in the system tray by default when launched at
+sign-in. Opening keylux manually shows the window. Double-click the tray icon
+or choose **Show keylux** to open the window from the tray. Turn off
+**Settings → Startup → Start in tray** to show the window at sign-in.
+If you upgrade a portable copy with **Run at startup** already enabled, turn
+that setting off and back on to refresh the Windows startup entry.
 
 Windows uses the current user's
 [`Run` registry entry](https://learn.microsoft.com/windows/win32/setupapi/run-and-runonce-registry-keys),
