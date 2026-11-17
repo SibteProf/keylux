@@ -472,6 +472,7 @@ dependencies = [
  "egui",
  "gtk",
  "image",
+ "objc",
  "raw-window-handle",
  "rfd",
  "serde",
