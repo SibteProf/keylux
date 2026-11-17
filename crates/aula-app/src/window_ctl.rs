@@ -1,20 +1,8 @@
-//! Showing a hidden window from a thread that is not the UI thread.
-//!
-//! This exists because of one awkward fact: eframe only calls `App::update`
-//! in response to a redraw, and a hidden window is never asked to paint. So
-//! once the window is hidden, `Context::request_repaint` does nothing and
-//! `send_viewport_cmd` is queued into an output that is never flushed — the UI
-//! thread is, for practical purposes, asleep and cannot be woken from inside
-//! egui at all.
-//!
-//! The way back in is to make the window visible through the windowing system
-//! directly. After that the paint messages resume, `update` runs again, and the
-//! rest of the restore (focus, un-minimise, bookkeeping) happens normally in
-//! egui.
-//!
-//! Only Windows is implemented. Elsewhere [`WindowRef::capture`] returns `None`
-//! and the caller must refuse to hide the window at all, so no platform can end
-//! up with a window it cannot get back.
+
+// Platform-specific window control.
+//
+// Windows uses HWND/DWM.
+// macOS uses NSWindow and NSApplication.
 
 use raw_window_handle::HasWindowHandle;
 
@@ -23,31 +11,48 @@ use raw_window_handle::HasWindowHandle;
 pub struct WindowRef {
     #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
     hwnd: isize,
+
+    #[cfg(target_os = "macos")]
+    ns_window: usize,
 }
 
 impl WindowRef {
-    /// Take a reference to the window, or `None` if this platform has no
-    /// implementation of [`show`](Self::show).
-    ///
-    /// The handle is only used to ask the windowing system to show a window we
-    /// own, and stays valid for as long as the app does.
+    /// Capture the native window handle.
     pub fn capture(window: &impl HasWindowHandle) -> Option<Self> {
-        let _ = window;
-        #[cfg(target_os = "windows")]
-        {
-            use raw_window_handle::RawWindowHandle;
-            match window.window_handle().ok()?.as_raw() {
-                RawWindowHandle::Win32(h) => Some(Self { hwnd: h.hwnd.get() }),
-                _ => None,
+        use raw_window_handle::RawWindowHandle;
+
+        let handle = window.window_handle().ok()?;
+
+        match handle.as_raw() {
+            #[cfg(target_os = "windows")]
+            RawWindowHandle::Win32(h) => Some(Self {
+                hwnd: h.hwnd.get(),
+            }),
+
+            #[cfg(target_os = "macos")]
+            RawWindowHandle::AppKit(h) => {
+                use objc::runtime::Object;
+                use objc::{msg_send, sel, sel_impl};
+
+                let view = h.ns_view.as_ptr() as *mut Object;
+                let ns_window: *mut Object =
+                    unsafe { msg_send![view, window] };
+
+                if ns_window.is_null() {
+                    return None;
+                }
+
+                Some(Self {
+                    hwnd: 0,
+                    ns_window: ns_window as usize,
+                })
             }
-        }
-        #[cfg(not(target_os = "windows"))]
-        {
-            None
+
+            _ => None,
         }
     }
 
-    /// Keep the window out of view even if eframe makes it visible while painting.
+    /// Keep the window out of view.
     pub fn set_cloaked(self, cloaked: bool) -> bool {
         #[cfg(target_os = "windows")]
         {
@@ -55,8 +60,9 @@ impl WindowRef {
                 Foundation::{BOOL, HWND},
                 Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_CLOAK},
             };
+
             let value: BOOL = i32::from(cloaked);
-            // The handle belongs to our live window. DWMWA_CLOAK expects a BOOL.
+
             unsafe {
                 DwmSetWindowAttribute(
                     self.hwnd as HWND,
@@ -66,6 +72,7 @@ impl WindowRef {
                 ) >= 0
             }
         }
+
         #[cfg(not(target_os = "windows"))]
         {
             let _ = cloaked;
@@ -73,20 +80,75 @@ impl WindowRef {
         }
     }
 
-    /// Un-hide, un-minimise and raise the window. Safe to call from any thread.
+    /// Change macOS Dock visibility.
+    ///
+    /// Accessory = 1 (no Dock icon).
+    /// Regular = 0 (normal Dock icon).
+    #[cfg(target_os = "macos")]
+    fn set_activation_policy(accessory: bool) {
+        use objc::runtime::Object;
+        use objc::{class, msg_send, sel, sel_impl};
+
+        unsafe {
+            let app: *mut Object =
+                msg_send![class!(NSApplication), sharedApplication];
+
+            let policy: isize = if accessory { 1 } else { 0 };
+
+            let _: bool = msg_send![app, setActivationPolicy: policy];
+        }
+    }
+
+    /// Hide the application from the macOS Dock.
+    ///
+    /// Must be called on the main thread.
+    #[cfg(target_os = "macos")]
+    pub fn hide_from_dock() {
+        Self::set_activation_policy(true);
+    }
+
+    /// Show the application in the macOS Dock.
+    ///
+    /// Must be called on the main thread.
+    #[cfg(target_os = "macos")]
+    pub fn show_in_dock() {
+    }
+
+    /// Show, un-minimise and focus the window.
+    ///
+    /// Safe to call from the tray event thread.
     pub fn show(self) {
         #[cfg(target_os = "windows")]
         unsafe {
             use windows_sys::Win32::UI::WindowsAndMessaging::{
                 SetForegroundWindow, ShowWindow, SW_RESTORE, SW_SHOW,
             };
+
             let hwnd = self.hwnd as windows_sys::Win32::Foundation::HWND;
+
             self.set_cloaked(false);
-            // SW_SHOW undoes the hide; SW_RESTORE additionally un-minimises,
-            // which matters because minimising is one of the ways we hide.
             ShowWindow(hwnd, SW_SHOW);
             ShowWindow(hwnd, SW_RESTORE);
             SetForegroundWindow(hwnd);
         }
+
+        #[cfg(target_os = "macos")]
+        unsafe {
+            use objc::runtime::Object;
+            use objc::{msg_send, sel, sel_impl};
+
+            let window = self.ns_window as *mut Object;
+
+            // Restore normal Dock visibility before showing the window.
+            Self::set_activation_policy(false);
+
+            let _: () = msg_send![
+                window,
+                performSelectorOnMainThread: sel!(makeKeyAndOrderFront:)
+                withObject: std::ptr::null_mut::<Object>()
+                waitUntilDone: 0i8
+            ];
+        }
     }
 }
+

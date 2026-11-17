@@ -165,6 +165,9 @@ impl App {
 
     /// Bring the window back from the tray.
     fn restore(&mut self, ctx: &egui::Context) {
+        #[cfg(target_os = "macos")]
+        WindowRef::show_in_dock();
+
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
         ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
         ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
@@ -184,6 +187,10 @@ impl App {
         if !self.can_hide() {
             return false;
         }
+
+        #[cfg(target_os = "macos")]
+        WindowRef::hide_from_dock();
+
         if !self.settings.run_in_background && running {
             self.engine.send(Cmd::SetRunning(false));
             self.resume_on_show = true;
